@@ -6,7 +6,8 @@ import asyncio
 from collections import Counter
 import json
 import datetime
-
+import os
+from dotenv import load_dotenv
 # Устанавливаем intents
 intents = nextcord.Intents.default()
 intents.message_content = True  # Включаем возможность читать контент сообщений
@@ -715,5 +716,6 @@ class MyHelpCommand(commands.HelpCommand):
 
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
-
-bot.run("MTM1MDIwMDU0MzgwMDIwMTI3OQ.GAZJEA.S0AnGfpBtyhFutAlEG9bcrf_p8Kb16Ip5bDtes")
+load_dotenv()
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+bot.run(TOKEN)
