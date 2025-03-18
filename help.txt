@@ -33,4 +33,4 @@
 - `!pick @user` - Упомянуть пользователя с веселым сообщением.
 
 
-**Ссылка на гит бота: 'https://github.com/sahaproshurik/bazarcikpmbot'**
+**Ссылка на гит бота: https://github.com/sahaproshurik/bazarcikpmbot**
