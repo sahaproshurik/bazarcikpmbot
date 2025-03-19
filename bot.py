@@ -949,7 +949,8 @@ async def payloan(ctx, payment_amount: int):
         return
 
     loan = player_loans[user_id][0]
-    remaining_balance = (loan['loan_amount'] * (1 + loan['interest_rate'])) - loan['paid_amount']
+    paid_amount = loan.get('paid_amount', 0)
+    remaining_balance = (loan['loan_amount'] * (1 + loan['interest_rate'])) - paid_amount
 
     if payment_amount > remaining_balance:
         payment_amount = remaining_balance  # Не позволяем переплатить
