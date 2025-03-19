@@ -541,7 +541,8 @@ class PickingView(View):
         if random.random() < 0.05:
             self.pick_button.disabled = True
             self.disabled = True
-            for remaining in range(60, 0, -1):
+            time = random.randint(60, 300)
+            for remaining in range(time, 0, -1):
                 await interaction.message.edit(content=f"{interaction.user.mention}, у вас ошибка в телефоне, ждем сапорта. Ожидание: {remaining} сек.", view=self)
                 await asyncio.sleep(1)
             self.pick_button.disabled = False
