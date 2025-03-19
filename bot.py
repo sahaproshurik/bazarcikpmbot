@@ -427,7 +427,10 @@ async def decrease_priemer():
             priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
         save_priemer()
 
-asyncio.create_task(decrease_priemer())
+async def main():
+    asyncio.create_task(decrease_priemer())
+
+asyncio.run(main())
 
 def generate_order():
     num_positions = random.randint(1, 30)
