@@ -821,6 +821,9 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         return
 
     age_on_server = get_user_age_on_server(ctx, ctx.author.id)
+    if age_on_server is None:
+        await ctx.send(f"{ctx.author.mention}, не удалось получить информацию о вашем возрасте на сервере.")
+        return
     max_loan = get_max_loan_amount(age_on_server)
 
     if loan_amount > max_loan:
