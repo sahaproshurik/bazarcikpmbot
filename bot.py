@@ -820,7 +820,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         await ctx.send("Максимальный срок кредита — 7 дней.")
         return
 
-    age_on_server = get_user_age_on_server(user_id)
+    age_on_server = get_user_age_on_server(ctx, ctx.author.id)
     max_loan = get_max_loan_amount(age_on_server)
 
     if loan_amount > max_loan:
@@ -857,7 +857,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
 # Функция для расчета кредита
 @bot.command()
 async def calculatecredit(ctx, loan_amount: int, loan_term: int):
-    age_on_server = get_user_age_on_server(str(ctx.author.id))
+    age_on_server = get_user_age_on_server(ctx, ctx.author.id)
     interest_rate = get_interest_rate(age_on_server)
     daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
 
