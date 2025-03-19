@@ -420,17 +420,25 @@ def save_priemer():
 
 priemer_data = load_priemer()
 
-async def decrease_priemer():
+order_history = {}  # Хранение количества заказов и позиций за последний час
+
+async def update_priemer():
     while True:
-        await asyncio.sleep(3600)  # Раз в час уменьшаем priemer
+        await asyncio.sleep(3600)
         for user_id in priemer_data:
-            priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
+            orders = order_history.get(user_id, [])
+            if orders:
+                avg_orders_per_hour = len(orders)
+                avg_positions_per_order = sum(orders) / avg_orders_per_hour
+                increase = (avg_orders_per_hour * avg_positions_per_order) / 10
+                priemer_data[user_id] = min(150, priemer_data[user_id] + increase)
+            else:
+                priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
         save_priemer()
+        order_history.clear()
 
-async def main():
-    asyncio.create_task(decrease_priemer())
-
-asyncio.run(main())
+loop = asyncio.get_event_loop()
+loop.create_task(update_priemer())
 
 def generate_order():
     num_positions = random.randint(1, 30)
@@ -535,17 +543,17 @@ class PickingView(View):
 
         user_id = str(interaction.user.id)
         num_positions = len(ORDERS[user_id])
+        priemer_data[user_id] = priemer_data.get(user_id, 0)
 
-        priemer = priemer_data.get(user_id, 50)
-        priemer = min(150, priemer + num_positions // 5)
-        priemer_data[user_id] = priemer
-        save_priemer()
+        if user_id not in order_history:
+            order_history[user_id] = []
+        order_history[user_id].append(num_positions)
 
-        if priemer < 60:
+        if priemer_data[user_id] < 60:
             earnings = random.randint(50, 10000)
-        elif priemer < 80:
+        elif priemer_data[user_id] < 80:
             earnings = random.randint(10000, 20000)
-        elif priemer < 120:
+        elif priemer_data[user_id] < 120:
             earnings = random.randint(20000, 50000)
         else:
             earnings = random.randint(50000, 100000)
@@ -559,7 +567,7 @@ class PickingView(View):
         del ORDERS[user_id]
         del ORDER_MESSAGES[user_id]
         await interaction.message.edit(
-            content=f"{interaction.user.mention}, заказ завершен! Вы заработали {earnings} денег. Налог: {tax_amount}. Итоговая сумма: {earnings_after_tax}. Ваш priemer: {priemer}",
+            content=f"{interaction.user.mention}, заказ завершен! Вы заработали {earnings} денег. Налог: {tax_amount}. Итоговая сумма: {earnings_after_tax}. Ваш priemer: {priemer_data[user_id]}",
             view=None)
         self.exit_button.disabled = False
         await self.show_new_order_button(interaction)
@@ -641,7 +649,7 @@ async def start_job(ctx, job: str):
 
     user_id = str(ctx.author.id)
     ORDERS[user_id] = generate_order()
-    priemer_data[user_id] = priemer_data.get(user_id, 50)  # Начальное значение priemer
+    priemer_data[user_id] = priemer_data.get(user_id, 0)  # Начальное значение priemer
     save_priemer()
 
     pickup_list = "\n".join([f"{i+1}. {order['location']} ({order['item']})" for i, order in enumerate(ORDERS[user_id])])
