@@ -966,6 +966,7 @@ async def checkloan(ctx):
 # Функция для погашения кредита
 @bot.command()
 async def payloan(ctx, payment_amount: int):
+    await ctx.message.delete()
     user_id = str(ctx.author.id)
 
     if user_id not in player_loans or not player_loans[user_id]:
