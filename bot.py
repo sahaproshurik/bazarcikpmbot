@@ -765,13 +765,21 @@ player_loans = load_loans()
 
 
 # Функция для расчета возраста пользователя на сервере
-def get_user_age_on_server(user_id):
-    join_date = player_funds.get(user_id, {}).get('join_date')
+def get_user_age_on_server(ctx, user_id):
+    # Получаем участника по ID
+    member = ctx.guild.get_member(user_id)
+    if member is None:
+        return None  # Пользователь не найден на сервере
+
+    # Получаем дату присоединения
+    join_date = member.joined_at
+
+    # Рассчитываем возраст на сервере
     if join_date:
-        join_date = datetime.strptime(join_date, "%Y-%m-%d")
-        age_on_server = (datetime.now() - join_date).days
+        today = datetime.datetime.utcnow()
+        age_on_server = (today - join_date).days  # Возраст в днях
         return age_on_server
-    return 0
+    return None
 
 
 # Функция для получения максимальной суммы кредита
