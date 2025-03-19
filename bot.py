@@ -1044,10 +1044,10 @@ async def apply_daily_tax():
     for user_id, balance in player_funds.items():
         # Если у пользователя меньше 37981 денег, налог 19%
         if balance < 37981:
-            tax = balance * 0.19
+            tax = int(balance * 0.19)
         else:
             # Если больше или равно 37981, налог 25%
-            tax = balance * 0.25
+            tax = int(balance * 0.25)
 
         # Списываем налог с баланса
         player_funds[user_id] -= tax
@@ -1058,7 +1058,7 @@ async def apply_daily_tax():
 
         # Отправляем сообщение о списании налога в общий канал
         await tax_channel.send(
-            f"{user.mention}, с вашего баланса был списан налог в размере {tax:.2f} денег. Ваш новый баланс: {player_funds[user_id]:.2f}.")
+            f"{user.mention}, с вашего баланса был списан налог в размере {tax} денег. Ваш новый баланс: {player_funds[user_id]}.")
 
     print("Налоги были успешно списаны.")
 
