@@ -812,7 +812,7 @@ def get_max_loan_amount(age_on_server):
 def calculate_daily_payment(loan_amount, loan_term, interest_rate):
     total_amount_to_pay = loan_amount * (1 + interest_rate)
     daily_payment = total_amount_to_pay / loan_term
-    return daily_payment
+    return int(daily_payment)
 
 
 # Функция для получения процентной ставки
