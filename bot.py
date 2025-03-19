@@ -494,6 +494,11 @@ async def update_priemer():
 loop = asyncio.get_event_loop()
 loop.create_task(update_priemer())
 
+@bot.command()
+async def priemer(ctx, user_id):
+    user_premier = priemer_data.get(user_id, 0)
+    return f"Priemer {ctx.author.mention}: {user_premier}"
+
 def generate_order():
     num_positions = random.randint(1, 30)
     positions = []
