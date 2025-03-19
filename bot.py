@@ -405,6 +405,30 @@ SPORT_ITEMS_WITH_BRANDS = {
 ORDERS = {}
 ORDER_MESSAGES = {}
 
+PRIEMER_FILE = "priemer_data.json"
+
+def load_priemer():
+    try:
+        with open(PRIEMER_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_priemer():
+    with open(PRIEMER_FILE, "w", encoding="utf-8") as file:
+        json.dump(priemer_data, file, indent=4)
+
+priemer_data = load_priemer()
+
+async def decrease_priemer():
+    while True:
+        await asyncio.sleep(3600)  # Раз в час уменьшаем priemer
+        for user_id in priemer_data:
+            priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
+        save_priemer()
+
+asyncio.create_task(decrease_priemer())
+
 def generate_order():
     num_positions = random.randint(1, 30)
     positions = []
@@ -449,16 +473,15 @@ class PickingView(View):
             await self.finish_order(interaction)
             return
 
-        if random.random() < 0.02:
+        if random.random() < 0.05:
             self.pick_button.disabled = True
             self.disabled = True
-            await interaction.response.send_message(f"{interaction.user.mention}, у вас ошибка в телефоне, ждем сапорта минуту.")
-            await interaction.message.edit(view=self)
-            await asyncio.sleep(60)
+            for remaining in range(60, 0, -1):
+                await interaction.message.edit(content=f"{interaction.user.mention}, у вас ошибка в телефоне, ждем сапорта. Ожидание: {remaining} сек.", view=self)
+                await asyncio.sleep(1)
             self.pick_button.disabled = False
             self.disabled = False
-            await interaction.message.edit(view=self)
-            await interaction.response.send_message(f"{interaction.user.mention}, можете продолжать пикинг.")
+            await interaction.message.edit(content=f"{interaction.user.mention}, можете продолжать пикинг.", view=self)
             return
 
         num_to_pick = random.randint(1, 5)
@@ -503,20 +526,39 @@ class PickingView(View):
         await interaction.message.edit(view=self)
 
     async def finish_order(self, interaction: nextcord.Interaction):
-        """Завершает заказ, начисляет деньги и удаляет данные заказа."""
         if str(interaction.user.id) != self.user_id:
             await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
             return
 
         user_id = str(interaction.user.id)
-        earnings = random.randint(50, 10000)
-        player_funds[user_id] = player_funds.get(user_id, 0) + earnings
+        num_positions = len(ORDERS[user_id])
+
+        priemer = priemer_data.get(user_id, 50)
+        priemer = min(150, priemer + num_positions // 5)
+        priemer_data[user_id] = priemer
+        save_priemer()
+
+        if priemer < 60:
+            earnings = random.randint(50, 10000)
+        elif priemer < 80:
+            earnings = random.randint(10000, 20000)
+        elif priemer < 120:
+            earnings = random.randint(20000, 50000)
+        else:
+            earnings = random.randint(50000, 100000)
+
+        tax = 0.07 if earnings <= 47000 else 0.19
+        tax_amount = int(earnings * tax)
+        earnings_after_tax = earnings - tax_amount
+
+        player_funds[user_id] = player_funds.get(user_id, 0) + earnings_after_tax
         save_funds()
         del ORDERS[user_id]
         del ORDER_MESSAGES[user_id]
-        await interaction.message.edit(content=f"{interaction.user.mention}, заказ завершен! Вы заработали {earnings} денег.", view=None)
+        await interaction.message.edit(
+            content=f"{interaction.user.mention}, заказ завершен! Вы заработали {earnings} денег. Налог: {tax_amount}. Итоговая сумма: {earnings_after_tax}. Ваш priemer: {priemer}",
+            view=None)
         self.exit_button.disabled = False
-        # Теперь кнопка "Выйти с работы" будет доступна
         await self.show_new_order_button(interaction)
     
     async def start_new_order(self, interaction: nextcord.Interaction):
@@ -537,7 +579,7 @@ class PickingView(View):
         view = PickingView(user_id)
 
         message = await interaction.channel.send(
-            f"{interaction.user.mention}, вы начали новый заказ из {len(ORDERS[user_id])} позиций.\n\n**Пикап лист:**\n{pickup_list}",
+            f"{interaction.user.mention}, вы начали новый заказ из {len(ORDERS[user_id])} позиций. Ваш priemer: {priemer_data[user_id]}\n\n**Пикап лист:**\n{pickup_list}",
             view=view
         )
 
@@ -585,7 +627,6 @@ class PickingView(View):
 @bot.command(name="gb")
 async def start_job(ctx, job: str):
     await ctx.message.delete()
-
     job = job.lower()
     if job in UNAVAILABLE_JOBS:
         await ctx.send(f"{ctx.author.mention}, мест уже нет!")
@@ -597,16 +638,16 @@ async def start_job(ctx, job: str):
 
     user_id = str(ctx.author.id)
     ORDERS[user_id] = generate_order()
+    priemer_data[user_id] = priemer_data.get(user_id, 50)  # Начальное значение priemer
+    save_priemer()
 
     pickup_list = "\n".join([f"{i+1}. {order['location']} ({order['item']})" for i, order in enumerate(ORDERS[user_id])])
 
     view = PickingView(user_id)
-
     message = await ctx.send(
-        f"{ctx.author.mention}, вы начали работу на пикинге. Вам выдан заказ из {len(ORDERS[user_id])} позиций.\n\n**Пикап лист:**\n{pickup_list}",
+        f"{ctx.author.mention}, вы начали работу на пикинге. Вам выдан заказ из {len(ORDERS[user_id])} позиций. Ваш priemer: {priemer_data[user_id]}\n\n**Пикап лист:**\n{pickup_list}",
         view=view
     )
-
     ORDER_MESSAGES[user_id] = message.id # Сохраняем ID сообщения  # Сохраняем ID сообщения  # Сохраняем ID сообщения
 # Проверка фишек
 
