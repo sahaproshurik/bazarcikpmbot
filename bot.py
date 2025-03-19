@@ -1,4 +1,5 @@
 import nextcord
+import pytz
 from discord.ext import commands, tasks
 import random
 from nextcord.ext import commands
@@ -784,8 +785,11 @@ async def get_user_age_on_server(ctx, user_id):
         print(f"Дата присоединения для пользователя {user_id} не найдена.")
         return None  # Если дата присоединения отсутствует, возвращаем None
 
+    # Преобразуем join_date в timezone-aware объект (с часовым поясом UTC)
+    join_date = join_date.astimezone(pytz.utc)
+
     # Рассчитываем возраст на сервере
-    today = datetime.utcnow()
+    today = datetime.now(pytz.utc)  # Используем timezone-aware datetime
     age_on_server = (today - join_date).days  # Возраст в днях
     return age_on_server
 
