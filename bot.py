@@ -743,6 +743,8 @@ async def pay(ctx, member: nextcord.Member, amount: int):
     await ctx.send(f"{ctx.author.mention} отправил {amount} денег {member.mention}!")
 
 
+LOANS_FILE = "player_loans.json"
+
 # Функция для загрузки данных о кредитах
 def load_loans():
     try:
@@ -760,7 +762,6 @@ def save_loans():
 
 # Загружаем данные при запуске бота
 player_loans = load_loans()
-LOANS_FILE = "player_loans.json"
 
 
 # Функция для расчета возраста пользователя на сервере
