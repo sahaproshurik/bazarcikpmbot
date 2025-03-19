@@ -478,13 +478,13 @@ order_history = {}  # Хранение количества заказов и п
 
 async def update_priemer():
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(60)
         for user_id in priemer_data:
             orders = order_history.get(user_id, [])
             if orders:
-                avg_orders_per_hour = len(orders)
-                avg_positions_per_order = sum(orders) / avg_orders_per_hour
-                increase = (avg_orders_per_hour * avg_positions_per_order) / 10
+                avg_orders_per_min = len(orders)
+                avg_positions_per_order = sum(orders) / avg_orders_per_min
+                increase = (avg_orders_per_min * avg_positions_per_order) / 10
                 priemer_data[user_id] = min(150, priemer_data[user_id] + increase)
             else:
                 priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
@@ -538,7 +538,7 @@ class PickingView(View):
             await self.finish_order(interaction)
             return
 
-        if random.random() < 0.05:
+        if random.random() < 0.03:
             self.pick_button.disabled = True
             self.disabled = True
             time = random.randint(60, 300)
