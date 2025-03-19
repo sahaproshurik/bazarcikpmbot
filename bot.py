@@ -477,8 +477,12 @@ priemer_data = load_priemer()
 order_history = {}  # Хранение количества заказов и позиций за последний час
 
 async def update_priemer():
+    decay_counter = 0  # Счетчик для уменьшения премиума
+
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # Обновление каждую минуту
+        decay_counter += 1  # Увеличиваем счетчик времени
+
         for user_id in priemer_data:
             orders = order_history.get(user_id, [])
             if orders:
@@ -487,7 +491,12 @@ async def update_priemer():
                 increase = (avg_orders_per_min * avg_positions_per_order) / 10
                 priemer_data[user_id] = int(min(150, priemer_data[user_id] + increase))
             else:
-                priemer_data[user_id] = int(max(0, priemer_data[user_id] - 1))
+                if decay_counter >= 60:  # Уменьшать премиум только раз в 60 минут
+                    priemer_data[user_id] = int(max(0, priemer_data[user_id] - 1))
+
+        if decay_counter >= 60:
+            decay_counter = 0  # Сбрасываем счетчик после уменьшения
+
         save_priemer()
         order_history.clear()
 
