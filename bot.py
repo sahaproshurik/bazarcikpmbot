@@ -785,7 +785,7 @@ async def get_user_age_on_server(ctx, user_id):
         return None  # Если дата присоединения отсутствует, возвращаем None
 
     # Рассчитываем возраст на сервере
-    today = datetime.datetime.utcnow()
+    today = datetime.utcnow()
     age_on_server = (today - join_date).days  # Возраст в днях
     return age_on_server
 
