@@ -259,7 +259,7 @@ async def init_player_funds(ctx):
 def calculate_tax(profit):
     if profit > 20000:
         tax = profit * 0.18  # 18% налог
-        return tax
+        return int(tax)
     return 0
 
 
@@ -974,7 +974,7 @@ async def moneyhelp(ctx):
     await ctx.send(help_text)
 
 
-tax_channel_id = 1350964493055955077   # Укажите свой канал ID
+tax_channel_id = 1351953330791776421   # Укажите свой канал ID
 
 
 # Функция для списания налога
