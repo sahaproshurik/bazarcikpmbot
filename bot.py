@@ -765,21 +765,29 @@ player_loans = load_loans()
 
 
 # Функция для расчета возраста пользователя на сервере
-def get_user_age_on_server(ctx, user_id):
-    # Получаем участника по ID
-    member = ctx.guild.get_member(user_id)
+async def get_user_age_on_server(ctx, user_id):
+    try:
+        # Пытаемся получить участника с помощью fetch_member для более надежного доступа
+        member = await ctx.guild.fetch_member(user_id)
+    except Exception as e:
+        print(f"Ошибка при получении участника: {e}")
+        return None  # Если не удается получить участника, возвращаем None
+
     if member is None:
+        print(f"Пользователь с ID {user_id} не найден на сервере.")
         return None  # Пользователь не найден на сервере
 
     # Получаем дату присоединения
     join_date = member.joined_at
 
+    if not join_date:
+        print(f"Дата присоединения для пользователя {user_id} не найдена.")
+        return None  # Если дата присоединения отсутствует, возвращаем None
+
     # Рассчитываем возраст на сервере
-    if join_date:
-        today = datetime.datetime.utcnow()
-        age_on_server = (today - join_date).days  # Возраст в днях
-        return age_on_server
-    return None
+    today = datetime.datetime.utcnow()
+    age_on_server = (today - join_date).days  # Возраст в днях
+    return age_on_server
 
 
 # Функция для получения максимальной суммы кредита
@@ -820,7 +828,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         await ctx.send("Максимальный срок кредита — 7 дней.")
         return
 
-    age_on_server = get_user_age_on_server(ctx, ctx.author.id)
+    age_on_server = await get_user_age_on_server(ctx, ctx.author.id)
     if age_on_server is None:
         await ctx.send(f"{ctx.author.mention}, не удалось получить информацию о вашем возрасте на сервере.")
         return
@@ -860,7 +868,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
 # Функция для расчета кредита
 @bot.command()
 async def calculatecredit(ctx, loan_amount: int, loan_term: int):
-    age_on_server = get_user_age_on_server(ctx, ctx.author.id)
+    age_on_server = await get_user_age_on_server(ctx, ctx.author.id)
     interest_rate = get_interest_rate(age_on_server)
     daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
 
