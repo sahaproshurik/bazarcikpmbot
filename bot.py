@@ -883,11 +883,7 @@ async def send_loan_warnings():
 
 
 # Запускаем задачу для отправки предупреждений
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    # Запуск задачи при запуске бота
-    send_loan_warnings.start()
+
 
 
 # Функция для проверки и обновления погашения кредита
@@ -1017,7 +1013,6 @@ async def apply_daily_tax():
 scheduler = AsyncIOScheduler()
 scheduler.add_job(apply_daily_tax,
                   CronTrigger(hour=20, minute=0))  # Используем CronTrigger для ежедневного запуска в 20:00
-scheduler.start()
 
 # Убедитесь, что бот использует asyncio
 loop = asyncio.get_event_loop()
@@ -1071,6 +1066,12 @@ class MyHelpCommand(commands.HelpCommand):
         await self.get_destination().send(help_text)
 
 
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name}')
+    # Запуск задачи при запуске бота
+    send_loan_warnings.start()
+    scheduler.start()
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
 load_dotenv()
