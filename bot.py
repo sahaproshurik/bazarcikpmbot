@@ -950,7 +950,7 @@ async def payloan(ctx, payment_amount: float):
         # Погашение кредита
         player_loans[user_id].remove(loan)
         save_loans()
-        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[user_id].get('balance', 0)}.")
+        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[str(ctx.author.id)]}.")
     else:
         await ctx.send(f"Остаток по кредиту: {remaining_balance:.2f}.")
 
