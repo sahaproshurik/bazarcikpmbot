@@ -925,7 +925,7 @@ async def checkloan(ctx):
             return
 
         days_left = (due_date - datetime.now()).days
-
+        await ctx.send(f"Кредиты {ctx.author.mention}:\n\n")
         await ctx.send(
             f"Ваш кредит:\n"
             f"Сумма кредита: {loan_amount} денег\n"
