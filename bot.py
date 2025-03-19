@@ -823,20 +823,15 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
     if age_on_server is None:
         await ctx.send(f"{ctx.author.mention}, не удалось получить информацию о вашем возрасте на сервере.")
         return
-
     max_loan = get_max_loan_amount(age_on_server)
 
     if loan_amount > max_loan:
-        await ctx.send(f"Вы можете взять кредит не более {max_loan} денег.")
+        await ctx.send(f"Вы можете взять кредит не более {max_loan}.")
         return
 
     interest_rate = get_interest_rate(age_on_server)
     daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
 
-    if user_id not in player_funds:
-        player_funds[user_id] = {'balance': 0}
-
-    # Сохраняем информацию о кредите в словарь
     if user_id not in player_loans:
         player_loans[user_id] = []
 
@@ -847,15 +842,23 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         "daily_payment": daily_payment,
         "loan_term": loan_term,
         "due_date": due_date,
-        "taken_by": ctx.author.name,
-        "paid_amount": 0  # Изначально ничего не оплачено
+        "paid_amount": 0
     })
+
+    # Добавляем деньги пользователю
+    if user_id not in player_funds:
+        player_funds[user_id] = 0
+    player_funds[user_id] += loan_amount
 
     save_funds()
     save_loans()
 
     await ctx.send(
-        f"Вы взяли кредит на сумму {loan_amount} денег. Ежедневный платеж: {daily_payment} денег. Дата погашения: {due_date}. Кредит оформил: {ctx.author.mention}.")
+        f"{ctx.author.mention} взял кредит на {loan_amount} денег. Ежедневный платеж: {daily_payment} денег.\n"
+        f"Дата погашения: {due_date}. Ваш текущий баланс: {player_funds[user_id]} денег."
+    )
+
+
 
 
 # Функция для расчета кредита
@@ -905,7 +908,9 @@ async def checkloan(ctx):
     for loan in player_loans[user_id]:
         due_date = datetime.strptime(loan['due_date'], "%Y-%m-%d")
         loan_amount = loan['loan_amount']
-        paid_amount = loan['paid_amount']
+
+        # Исправлено: Если 'paid_amount' отсутствует, устанавливаем 0
+        paid_amount = loan.get('paid_amount', 0)
 
         remaining_amount = loan_amount - paid_amount
 
@@ -929,6 +934,7 @@ async def checkloan(ctx):
             f"Осталось дней до погашения: {days_left} дней\n"
             f"Дата погашения: {loan['due_date']}")
 
+
 # Функция для погашения кредита
 @bot.command()
 async def payloan(ctx, payment_amount: int):
@@ -938,25 +944,34 @@ async def payloan(ctx, payment_amount: int):
         await ctx.send("У вас нет активного кредита.")
         return
 
+    if user_id not in player_funds or player_funds[user_id] < payment_amount:
+        await ctx.send("У вас недостаточно денег для оплаты кредита.")
+        return
+
     loan = player_loans[user_id][0]
-    remaining_balance = loan['loan_amount'] * (1 + loan['interest_rate']) - payment_amount
+    remaining_balance = (loan['loan_amount'] * (1 + loan['interest_rate'])) - loan['paid_amount']
 
-    # Обновляем погашенную сумму
-    loan['paid_amount'] += payment_amount
+    if payment_amount > remaining_balance:
+        payment_amount = remaining_balance  # Не позволяем переплатить
 
-    if remaining_balance <= 0:
+    # Вычитаем деньги у пользователя
+    player_funds[user_id] -= payment_amount
+    loan["paid_amount"] += payment_amount
+
+    # Проверяем, погашен ли кредит
+    if loan["paid_amount"] >= loan["loan_amount"] * (1 + loan["interest_rate"]):
         player_loans[user_id].remove(loan)
-        save_loans()
-
-        # Обновляем баланс пользователя
-        player_funds[user_id]['balance'] -= payment_amount
-        save_funds()
-
-        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[user_id]['balance']} денег.")
+        await ctx.send(f"Вы полностью погасили кредит. Ваш новый баланс: {player_funds[user_id]} денег.")
     else:
-        player_funds[user_id]['balance'] -= payment_amount
-        save_funds()
-        await ctx.send(f"Остаток по кредиту: {remaining_balance}. Ваш баланс: {player_funds[user_id]['balance']} денег.")
+        await ctx.send(
+            f"Вы внесли {payment_amount} денег.\n"
+            f"Осталось погасить: {remaining_balance - payment_amount} денег.\n"
+            f"Ваш новый баланс: {player_funds[user_id]} денег."
+        )
+
+    save_funds()
+    save_loans()
+
 
 
 # Функция для обработки непогашенного кредита
