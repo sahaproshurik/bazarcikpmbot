@@ -768,31 +768,22 @@ player_loans = load_loans()
 # Функция для расчета возраста пользователя на сервере
 async def get_user_age_on_server(ctx, user_id):
     try:
-        # Пытаемся получить участника с помощью fetch_member для более надежного доступа
         member = await ctx.guild.fetch_member(user_id)
     except Exception as e:
         print(f"Ошибка при получении участника: {e}")
-        return None  # Если не удается получить участника, возвращаем None
+        return None
 
     if member is None:
-        print(f"Пользователь с ID {user_id} не найден на сервере.")
-        return None  # Пользователь не найден на сервере
+        return None
 
-    # Получаем дату присоединения
     join_date = member.joined_at
-
     if not join_date:
-        print(f"Дата присоединения для пользователя {user_id} не найдена.")
-        return None  # Если дата присоединения отсутствует, возвращаем None
+        return None
 
-    # Преобразуем join_date в timezone-aware объект (с часовым поясом UTC)
     join_date = join_date.astimezone(pytz.utc)
-
-    # Рассчитываем возраст на сервере
-    today = datetime.now(pytz.utc)  # Используем timezone-aware datetime
-    age_on_server = (today - join_date).days  # Возраст в днях
+    today = datetime.now(pytz.utc)
+    age_on_server = (today - join_date).days
     return age_on_server
-
 
 # Функция для получения максимальной суммы кредита
 def get_max_loan_amount(age_on_server):
@@ -807,13 +798,11 @@ def get_max_loan_amount(age_on_server):
     else:
         return 1000000
 
-
 # Функция для расчета ежедневного платежа
 def calculate_daily_payment(loan_amount, loan_term, interest_rate):
     total_amount_to_pay = loan_amount * (1 + interest_rate)
     daily_payment = total_amount_to_pay / loan_term
     return int(daily_payment)
-
 
 # Функция для получения процентной ставки
 def get_interest_rate(age_on_server):
@@ -821,13 +810,11 @@ def get_interest_rate(age_on_server):
         return 0.15
     return 0.20
 
-
 # Функция для оформления кредита
 @bot.command()
 async def applyloan(ctx, loan_amount: int, loan_term: int):
     user_id = str(ctx.author.id)
 
-    # Проверка, что срок кредита не превышает 7 дней
     if loan_term > 7:
         await ctx.send("Максимальный срок кредита — 7 дней.")
         return
@@ -836,17 +823,18 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
     if age_on_server is None:
         await ctx.send(f"{ctx.author.mention}, не удалось получить информацию о вашем возрасте на сервере.")
         return
+
     max_loan = get_max_loan_amount(age_on_server)
 
     if loan_amount > max_loan:
-        await ctx.send(f"Вы можете взять кредит не более {max_loan}.")
+        await ctx.send(f"Вы можете взять кредит не более {max_loan} денег.")
         return
 
     interest_rate = get_interest_rate(age_on_server)
     daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
 
     if user_id not in player_funds:
-        player_funds[user_id] = {}
+        player_funds[user_id] = {'balance': 0}
 
     # Сохраняем информацию о кредите в словарь
     if user_id not in player_loans:
@@ -859,14 +847,15 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         "daily_payment": daily_payment,
         "loan_term": loan_term,
         "due_date": due_date,
-        "taken_by": ctx.author.name
+        "taken_by": ctx.author.name,
+        "paid_amount": 0  # Изначально ничего не оплачено
     })
 
     save_funds()
     save_loans()
 
     await ctx.send(
-        f"Вы взяли кредит на сумму {loan_amount}. Ежедневный платеж: {daily_payment:.2f}. Дата погашения: {due_date}. Кредит оформил: {ctx.author.name}.")
+        f"Вы взяли кредит на сумму {loan_amount} денег. Ежедневный платеж: {daily_payment} денег. Дата погашения: {due_date}. Кредит оформил: {ctx.author.mention}.")
 
 
 # Функция для расчета кредита
@@ -904,11 +893,6 @@ async def send_loan_warnings():
                 if user:
                     await user.send(f"Ваш кредит сроком до {loan['due_date']} истекает через 1 час.")
 
-
-# Запускаем задачу для отправки предупреждений
-
-
-
 # Функция для проверки и обновления погашения кредита
 @bot.command()
 async def checkloan(ctx):
@@ -918,44 +902,36 @@ async def checkloan(ctx):
         await ctx.send("У вас нет активного кредита.")
         return
 
-    # Перебираем все кредиты пользователя
     for loan in player_loans[user_id]:
         due_date = datetime.strptime(loan['due_date'], "%Y-%m-%d")
         loan_amount = loan['loan_amount']
-        paid_amount = loan.get('paid_amount', 0)  # Если нет информации о погашении, считаем, что ничего не оплачено
+        paid_amount = loan['paid_amount']
 
-        # Вычисляем оставшуюся сумму
         remaining_amount = loan_amount - paid_amount
 
-        # Если текущая дата позже даты погашения
         if datetime.now() > due_date:
-            # Просрочка, даем 2 дополнительных дня
             new_due_date = due_date + timedelta(days=2)
             loan['due_date'] = new_due_date.strftime("%Y-%m-%d")
             loan['loan_amount'] *= 2  # Увеличиваем долг в 2 раза
             save_loans()
 
-            # Отправляем сообщение о просрочке
             await ctx.send(
                 f"Просрочка! Вам дано еще 2 дня для погашения. Долг увеличен в 2 раза. Новая дата погашения: {new_due_date.strftime('%Y-%m-%d')}.")
             return
 
-        # Вычисляем количество дней до погашения
         days_left = (due_date - datetime.now()).days
 
-        # Отправляем информацию о кредите
         await ctx.send(
             f"Ваш кредит:\n"
-            f"Сумма кредита: {loan_amount} монет\n"
-            f"Погашено: {paid_amount} монет\n"
-            f"Осталось погасить: {remaining_amount} монет\n"
+            f"Сумма кредита: {loan_amount} денег\n"
+            f"Погашено: {paid_amount} денег\n"
+            f"Осталось погасить: {remaining_amount} денег\n"
             f"Осталось дней до погашения: {days_left} дней\n"
             f"Дата погашения: {loan['due_date']}")
 
-
 # Функция для погашения кредита
 @bot.command()
-async def payloan(ctx, payment_amount: float):
+async def payloan(ctx, payment_amount: int):
     user_id = str(ctx.author.id)
 
     if user_id not in player_loans or not player_loans[user_id]:
@@ -965,13 +941,22 @@ async def payloan(ctx, payment_amount: float):
     loan = player_loans[user_id][0]
     remaining_balance = loan['loan_amount'] * (1 + loan['interest_rate']) - payment_amount
 
+    # Обновляем погашенную сумму
+    loan['paid_amount'] += payment_amount
+
     if remaining_balance <= 0:
-        # Погашение кредита
         player_loans[user_id].remove(loan)
         save_loans()
-        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[str(ctx.author.id)]}.")
+
+        # Обновляем баланс пользователя
+        player_funds[user_id]['balance'] -= payment_amount
+        save_funds()
+
+        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[user_id]['balance']} денег.")
     else:
-        await ctx.send(f"Остаток по кредиту: {remaining_balance:.2f}.")
+        player_funds[user_id]['balance'] -= payment_amount
+        save_funds()
+        await ctx.send(f"Остаток по кредиту: {remaining_balance}. Ваш баланс: {player_funds[user_id]['balance']} денег.")
 
 
 # Функция для обработки непогашенного кредита
