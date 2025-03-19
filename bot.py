@@ -883,7 +883,11 @@ async def send_loan_warnings():
 
 
 # Запускаем задачу для отправки предупреждений
-send_loan_warnings.start()
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name}')
+    # Запуск задачи при запуске бота
+    send_loan_warnings.start()
 
 
 # Функция для проверки и обновления погашения кредита
