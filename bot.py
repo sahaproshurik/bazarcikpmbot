@@ -505,6 +505,7 @@ loop.create_task(update_priemer())
 
 @bot.command()
 async def priemer(ctx):
+    await ctx.message.delete()
     user_id = str(ctx.author.id)
     if user_id in priemer_data:
         await ctx.send(f"Priemer {ctx.author.mention}: {priemer_data[user_id]}")
