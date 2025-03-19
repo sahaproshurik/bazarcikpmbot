@@ -918,20 +918,39 @@ async def checkloan(ctx):
         await ctx.send("У вас нет активного кредита.")
         return
 
+    # Перебираем все кредиты пользователя
     for loan in player_loans[user_id]:
         due_date = datetime.strptime(loan['due_date'], "%Y-%m-%d")
+        loan_amount = loan['loan_amount']
+        paid_amount = loan.get('paid_amount', 0)  # Если нет информации о погашении, считаем, что ничего не оплачено
 
+        # Вычисляем оставшуюся сумму
+        remaining_amount = loan_amount - paid_amount
+
+        # Если текущая дата позже даты погашения
         if datetime.now() > due_date:
             # Просрочка, даем 2 дополнительных дня
             new_due_date = due_date + timedelta(days=2)
             loan['due_date'] = new_due_date.strftime("%Y-%m-%d")
             loan['loan_amount'] *= 2  # Увеличиваем долг в 2 раза
             save_loans()
+
+            # Отправляем сообщение о просрочке
             await ctx.send(
                 f"Просрочка! Вам дано еще 2 дня для погашения. Долг увеличен в 2 раза. Новая дата погашения: {new_due_date.strftime('%Y-%m-%d')}.")
             return
 
-    await ctx.send(f"Ваш кредит еще не просрочен. Дата погашения: {loan['due_date']}.")
+        # Вычисляем количество дней до погашения
+        days_left = (due_date - datetime.now()).days
+
+        # Отправляем информацию о кредите
+        await ctx.send(
+            f"Ваш кредит:\n"
+            f"Сумма кредита: {loan_amount} монет\n"
+            f"Погашено: {paid_amount} монет\n"
+            f"Осталось погасить: {remaining_amount} монет\n"
+            f"Осталось дней до погашения: {days_left} дней\n"
+            f"Дата погашения: {loan['due_date']}")
 
 
 # Функция для погашения кредита
