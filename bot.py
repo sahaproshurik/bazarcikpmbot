@@ -1,13 +1,17 @@
 import nextcord
+from discord.ext import commands, tasks
 import random
 from nextcord.ext import commands
 from nextcord.ui import View, Button  # Добавляем импорт View и Button
 import asyncio
 from collections import Counter
 import json
-import datetime
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
 # Устанавливаем intents
 intents = nextcord.Intents.default()
 intents.message_content = True  # Включаем возможность читать контент сообщений
@@ -252,6 +256,14 @@ async def init_player_funds(ctx):
 
 # Команда для игры в Блекджек с учетом ставок
 
+def calculate_tax(profit):
+    if profit > 20000:
+        tax = profit * 0.18  # 18% налог
+        return tax
+    return 0
+
+
+# Блэкджек
 @bot.command(name="bj")
 async def blackjack(ctx, bet: int):
     await ctx.message.delete()
@@ -262,89 +274,105 @@ async def blackjack(ctx, bet: int):
     if bet > player_funds[str(ctx.author.id)]:
         await ctx.send("У вас недостаточно денег для этой ставки.")
         return
-    
+
     player_funds[str(ctx.author.id)] -= bet  # Вычитаем ставку из фишек
     save_funds()
     deck = create_deck()
     player_hand = [deck.pop(), deck.pop()]
     dealer_hand = [deck.pop(), deck.pop()]
     await ctx.send(f"{ctx.author.mention} начал игру в Блэкджек. Ставка: {bet}")
-    await ctx.send(f"Ваши карты: {', '.join([f'{card[0]}{suits[card[1]]}' for card in player_hand])} (Сумма: {calculate_hand(player_hand)})")
+    await ctx.send(
+        f"Ваши карты: {', '.join([f'{card[0]}{suits[card[1]]}' for card in player_hand])} (Сумма: {calculate_hand(player_hand)})")
     await ctx.send(f"Карты дилера: {dealer_hand[0][0]}{suits[dealer_hand[0][1]]} и скрытая карта.")
-    
+
     if calculate_hand(player_hand) == 21:  # Проверка на блэкджек
         winnings = bet * 3  # Больше награда за блэкджек
         player_funds[str(ctx.author.id)] += winnings
         save_funds()
-        await ctx.send(f"Поздравляем, у {ctx.author.mention} Блэкджек! Вы выиграли {winnings} денег! Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
+        tax = calculate_tax(winnings - bet)  # Чистая прибыль - ставка
+        if tax > 0:
+            player_funds[str(ctx.author.id)] -= tax
+            save_funds()
+            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+        await ctx.send(
+            f"Поздравляем, у {ctx.author.mention} Блэкджек! Вы выиграли {winnings} денег! Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
         return
-    
+
     while calculate_hand(player_hand) < 21:
         await ctx.send("Хотите взять еще карту? Введите !hit для добора или !stand для завершения.")
-        
+
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['!hit', '!stand']
 
         msg = await bot.wait_for('message', check=check)
-        
+
         # Удаление сообщения с командой после получения
         await msg.delete()
 
         if msg.content.lower() == '!hit':
             player_hand.append(deck.pop())
-            await ctx.send(f"Вы взяли {player_hand[-1][0]}{suits[player_hand[-1][1]]}. (Сумма: {calculate_hand(player_hand)})")
+            await ctx.send(
+                f"Вы взяли {player_hand[-1][0]}{suits[player_hand[-1][1]]}. (Сумма: {calculate_hand(player_hand)})")
             if calculate_hand(player_hand) > 21:
-                await ctx.send(f"{ctx.author.mention} проиграл! Сумма ваших карт: {calculate_hand(player_hand)}. Вы превысили 21!")
+                await ctx.send(
+                    f"{ctx.author.mention} проиграл! Сумма ваших карт: {calculate_hand(player_hand)}. Вы превысили 21!")
                 return
         elif msg.content.lower() == '!stand':
             break
-    
+
     while calculate_hand(dealer_hand) < 17:
         dealer_hand.append(deck.pop())
-    
-    await ctx.send(f"Карты дилера: {', '.join([f'{card[0]}{suits[card[1]]}' for card in dealer_hand])}. (Сумма: {calculate_hand(dealer_hand)})")
-    
+
+    await ctx.send(
+        f"Карты дилера: {', '.join([f'{card[0]}{suits[card[1]]}' for card in dealer_hand])}. (Сумма: {calculate_hand(dealer_hand)})")
+
     player_total = calculate_hand(player_hand)
     dealer_total = calculate_hand(dealer_hand)
-    
+
     if player_total > 21:
         await ctx.send("Вы проиграли, так как превысили 21!")
     elif dealer_total > 21 or player_total > dealer_total:
         winnings = bet * 2
         player_funds[str(ctx.author.id)] += winnings
         save_funds()
-        await ctx.send(f"{ctx.author.mention} выиграл! Ваш выигрыш: {winnings} денег. Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
+        tax = calculate_tax(winnings - bet)  # Чистая прибыль - ставка
+        if tax > 0:
+            player_funds[str(ctx.author.id)] -= tax
+            save_funds()
+            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+        await ctx.send(
+            f"{ctx.author.mention} выиграл! Ваш выигрыш: {winnings} денег. Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
     elif player_total < dealer_total:
         await ctx.send(f"{ctx.author.mention} проиграл! Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
     else:
         player_funds[str(ctx.author.id)] += bet  # Возвращаем ставку при ничье
         save_funds()
-        await ctx.send(f"Ничья {ctx.author.mention}! Ваша ставка возвращена. У вас {player_funds[str(ctx.author.id)]} денег.")
+        await ctx.send(
+            f"Ничья {ctx.author.mention}! Ваша ставка возвращена. У вас {player_funds[str(ctx.author.id)]} денег.")
 
 
-
-# Команда для игрового автомата
+# Команда для игрового автомата (flip)
 @bot.command()
 async def flip(ctx, bet: int, choice: str):
     await ctx.message.delete()
     await init_player_funds(ctx)
-    
+
     if bet > player_funds[str(ctx.author.id)]:
         await ctx.send("У вас недостаточно денег для этой ставки.")
         return
     if bet <= 0:
         await ctx.send("Ставка должна быть положительным числом.")
         return
-    
+
     choice = choice.strip().lower()
     valid_choices = ["о", "орел", "o", "orel", "р", "решка", "p", "reshka"]
-    
+
     if choice not in valid_choices:
         await ctx.send("Вы должны выбрать Орел (о, o, орел) или Решка (р, p, решка).")
         return
 
     choice_result = "Орел" if choice in ["о", "орел", "o", "orel"] else "Решка"
-    
+
     player_funds[str(ctx.author.id)] -= bet
     save_funds()
     result = random.choice(["о", "р", "o", "p"])
@@ -354,9 +382,17 @@ async def flip(ctx, bet: int, choice: str):
         winnings = bet * 2
         player_funds[str(ctx.author.id)] += winnings
         save_funds()
-        await ctx.send(f"{ctx.author.mention} выиграл! Выпал {result_str}. Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
+        tax = calculate_tax(winnings - bet)  # Чистая прибыль - ставка
+        if tax > 0:
+            player_funds[str(ctx.author.id)] -= tax
+            save_funds()
+            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+        await ctx.send(
+            f"{ctx.author.mention} выиграл! Выпал {result_str}. Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
     else:
-        await ctx.send(f"{ctx.author.mention} проиграл. Выпал {result_str}. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
+        await ctx.send(
+            f"{ctx.author.mention} проиграл. Выпал {result_str}. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
+
 
 @bot.command()
 async def spin(ctx, bet: int):
@@ -376,13 +412,30 @@ async def spin(ctx, bet: int):
 
     await ctx.send(f"{ctx.author.mention} крутит слоты... | Результат: {' | '.join(spin_result)}")
 
-    if len(set(spin_result)) == 1:
+    if len(set(spin_result)) == 1:  # Все три символа одинаковые
         winnings = bet * 5
         player_funds[str(ctx.author.id)] += winnings
         save_funds()
+        tax = calculate_tax(winnings - bet)  # Чистая прибыль - ставка
+        if tax > 0:
+            player_funds[str(ctx.author.id)] -= tax
+            save_funds()
+            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
         await ctx.send(f"{ctx.author.mention} выиграл! Все символы совпали! Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
+    elif len(set(spin_result)) == 2:  # Два одинаковых символа
+        winnings = bet * 2
+        player_funds[str(ctx.author.id)] += winnings
+        save_funds()
+        tax = calculate_tax(winnings - bet)  # Чистая прибыль - ставка
+        if tax > 0:
+            player_funds[str(ctx.author.id)] -= tax
+            save_funds()
+            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+        await ctx.send(f"{ctx.author.mention} выиграл! Два символа совпали! Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
     else:
         await ctx.send(f"{ctx.author.mention} проиграл. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
+
+
 
 AVAILABLE_JOBS = ["пикинг"]
 UNAVAILABLE_JOBS = ["баление", "бафер", "боксы", "вратки"]
@@ -689,6 +742,280 @@ async def pay(ctx, member: nextcord.Member, amount: int):
     # Подтверждаем перевод
     await ctx.send(f"{ctx.author.mention} отправил {amount} денег {member.mention}!")
 
+
+# Функция для загрузки данных о кредитах
+def load_loans():
+    try:
+        with open(LOANS_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+# Функция для сохранения данных о кредитах
+def save_loans():
+    with open(LOANS_FILE, "w") as f:
+        json.dump(player_loans, f)
+
+
+# Загружаем данные при запуске бота
+player_loans = load_loans()
+LOANS_FILE = "player_loans.json"
+
+
+# Функция для расчета возраста пользователя на сервере
+def get_user_age_on_server(user_id):
+    join_date = player_funds.get(user_id, {}).get('join_date')
+    if join_date:
+        join_date = datetime.strptime(join_date, "%Y-%m-%d")
+        age_on_server = (datetime.now() - join_date).days
+        return age_on_server
+    return 0
+
+
+# Функция для получения максимальной суммы кредита
+def get_max_loan_amount(age_on_server):
+    if age_on_server < 30:
+        return 0
+    elif age_on_server < 60:
+        return 100000
+    elif age_on_server < 90:
+        return 300000
+    elif age_on_server < 120:
+        return 500000
+    else:
+        return 1000000
+
+
+# Функция для расчета ежедневного платежа
+def calculate_daily_payment(loan_amount, loan_term, interest_rate):
+    total_amount_to_pay = loan_amount * (1 + interest_rate)
+    daily_payment = total_amount_to_pay / loan_term
+    return daily_payment
+
+
+# Функция для получения процентной ставки
+def get_interest_rate(age_on_server):
+    if age_on_server > 120:
+        return 0.15
+    return 0.20
+
+
+# Функция для оформления кредита
+@bot.command()
+async def applyloan(ctx, loan_amount: int, loan_term: int):
+    user_id = str(ctx.author.id)
+
+    # Проверка, что срок кредита не превышает 7 дней
+    if loan_term > 7:
+        await ctx.send("Максимальный срок кредита — 7 дней.")
+        return
+
+    age_on_server = get_user_age_on_server(user_id)
+    max_loan = get_max_loan_amount(age_on_server)
+
+    if loan_amount > max_loan:
+        await ctx.send(f"Вы можете взять кредит не более {max_loan}.")
+        return
+
+    interest_rate = get_interest_rate(age_on_server)
+    daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
+
+    if user_id not in player_funds:
+        player_funds[user_id] = {}
+
+    # Сохраняем информацию о кредите в словарь
+    if user_id not in player_loans:
+        player_loans[user_id] = []
+
+    due_date = (datetime.now() + timedelta(days=loan_term)).strftime("%Y-%m-%d")
+    player_loans[user_id].append({
+        "loan_amount": loan_amount,
+        "interest_rate": interest_rate,
+        "daily_payment": daily_payment,
+        "loan_term": loan_term,
+        "due_date": due_date,
+        "taken_by": ctx.author.name
+    })
+
+    save_funds()
+    save_loans()
+
+    await ctx.send(
+        f"Вы взяли кредит на сумму {loan_amount}. Ежедневный платеж: {daily_payment:.2f}. Дата погашения: {due_date}. Кредит оформил: {ctx.author.name}.")
+
+
+# Функция для расчета кредита
+@bot.command()
+async def calculatecredit(ctx, loan_amount: int, loan_term: int):
+    age_on_server = get_user_age_on_server(str(ctx.author.id))
+    interest_rate = get_interest_rate(age_on_server)
+    daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
+
+    await ctx.send(f"Кредит на сумму {loan_amount} на {loan_term} дней.\n"
+                   f"Процентная ставка: {interest_rate * 100}%.\n"
+                   f"Ежедневный платеж: {daily_payment:.2f}")
+
+
+# Функция для проверки и отправки предупреждений
+@tasks.loop(minutes=60)
+async def send_loan_warnings():
+    for user_id, loans in player_loans.items():
+        for loan in loans:
+            due_date = datetime.strptime(loan['due_date'], "%Y-%m-%d")
+            if due_date - datetime.now() == timedelta(days=3):
+                user = bot.get_user(int(user_id))
+                if user:
+                    await user.send(f"Ваш кредит сроком до {loan['due_date']} истекает через 3 дня.")
+            elif due_date - datetime.now() == timedelta(days=1):
+                user = bot.get_user(int(user_id))
+                if user:
+                    await user.send(f"Ваш кредит сроком до {loan['due_date']} истекает через 1 день.")
+            elif due_date - datetime.now() == timedelta(hours=12):
+                user = bot.get_user(int(user_id))
+                if user:
+                    await user.send(f"Ваш кредит сроком до {loan['due_date']} истекает через 12 часов.")
+            elif due_date - datetime.now() == timedelta(hours=1):
+                user = bot.get_user(int(user_id))
+                if user:
+                    await user.send(f"Ваш кредит сроком до {loan['due_date']} истекает через 1 час.")
+
+
+# Запускаем задачу для отправки предупреждений
+send_loan_warnings.start()
+
+
+# Функция для проверки и обновления погашения кредита
+@bot.command()
+async def checkloan(ctx):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_loans or not player_loans[user_id]:
+        await ctx.send("У вас нет активного кредита.")
+        return
+
+    for loan in player_loans[user_id]:
+        due_date = datetime.strptime(loan['due_date'], "%Y-%m-%d")
+
+        if datetime.now() > due_date:
+            # Просрочка, даем 2 дополнительных дня
+            new_due_date = due_date + timedelta(days=2)
+            loan['due_date'] = new_due_date.strftime("%Y-%m-%d")
+            loan['loan_amount'] *= 2  # Увеличиваем долг в 2 раза
+            save_loans()
+            await ctx.send(
+                f"Просрочка! Вам дано еще 2 дня для погашения. Долг увеличен в 2 раза. Новая дата погашения: {new_due_date.strftime('%Y-%m-%d')}.")
+            return
+
+    await ctx.send(f"Ваш кредит еще не просрочен. Дата погашения: {loan['due_date']}.")
+
+
+# Функция для погашения кредита
+@bot.command()
+async def payloan(ctx, payment_amount: float):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_loans or not player_loans[user_id]:
+        await ctx.send("У вас нет активного кредита.")
+        return
+
+    loan = player_loans[user_id][0]
+    remaining_balance = loan['loan_amount'] * (1 + loan['interest_rate']) - payment_amount
+
+    if remaining_balance <= 0:
+        # Погашение кредита
+        player_loans[user_id].remove(loan)
+        save_loans()
+        await ctx.send(f"Ваш кредит погашен успешно. Баланс: {player_funds[user_id].get('balance', 0)}.")
+    else:
+        await ctx.send(f"Остаток по кредиту: {remaining_balance:.2f}.")
+
+
+# Функция для обработки непогашенного кредита
+@bot.command()
+async def handleunpaidloan(ctx):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_loans or not player_loans[user_id]:
+        await ctx.send("У вас нет активного кредита.")
+        return
+
+    loan = player_loans[user_id][0]
+    loan_amount = loan['loan_amount']
+
+    # Если не погашено вовремя, штрафуем
+    if datetime.now() > datetime.strptime(loan['due_date'], "%Y-%m-%d"):
+        # Если прошло 2 дополнительных дня
+        if (datetime.now() - datetime.strptime(loan['due_date'], "%Y-%m-%d")).days > 2:
+            player_funds[user_id]['balance'] -= loan_amount * 10
+            player_loans[user_id].remove(loan)
+            save_funds()
+            save_loans()
+            await ctx.send(f"Вы не погасили кредит вовремя. С вашего счета списано {loan_amount * 10}.")
+        else:
+            await ctx.send(
+                f"У вас есть еще время для погашения кредита, долг сейчас в 2 раза больше. Дата погашения: {loan['due_date']}.")
+    else:
+        await ctx.send("Ваш кредит еще не просрочен.")
+
+
+# Команда для получения информации о кредитах
+@bot.command(name="moneyhelp")
+async def moneyhelp(ctx):
+    # Чтение содержимого файла
+    try:
+        with open("moneyhelp.txt", "r", encoding="utf-8") as file:
+            help_text = file.read()
+    except FileNotFoundError:
+        help_text = "Файл с информацией не найден."
+
+    # Отправка содержимого файла в чат
+    await ctx.send(help_text)
+
+
+tax_channel_id = 1350964493055955077   # Укажите свой канал ID
+
+
+# Функция для списания налога
+async def apply_daily_tax():
+    # Получаем канал, в который будем отправлять сообщения
+    tax_channel = bot.get_channel(tax_channel_id)
+
+    if not tax_channel:
+        print("Канал для налога не найден.")
+        return
+
+    # Проходим по всем пользователям и списываем налог
+    for user_id, balance in player_funds.items():
+        # Если у пользователя меньше 37981 денег, налог 19%
+        if balance < 37981:
+            tax = balance * 0.19
+        else:
+            # Если больше или равно 37981, налог 25%
+            tax = balance * 0.25
+
+        # Списываем налог с баланса
+        player_funds[user_id] -= tax
+        save_funds()  # Сохраняем изменения
+
+        # Получаем пользователя по ID
+        user = await bot.fetch_user(user_id)
+
+        # Отправляем сообщение о списании налога в общий канал
+        await tax_channel.send(
+            f"{user.mention}, с вашего баланса был списан налог в размере {tax:.2f} денег. Ваш новый баланс: {player_funds[user_id]:.2f}.")
+
+    print("Налоги были успешно списаны.")
+
+
+# Планируем задачу, которая будет запускаться каждый день в 20:00
+scheduler = AsyncIOScheduler()
+scheduler.add_job(apply_daily_tax,
+                  CronTrigger(hour=20, minute=0))  # Используем CronTrigger для ежедневного запуска в 20:00
+scheduler.start()
+
+# Убедитесь, что бот использует asyncio
+loop = asyncio.get_event_loop()
 
 @bot.command(name="money")
 async def check_funds(ctx):
