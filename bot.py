@@ -485,9 +485,9 @@ async def update_priemer():
                 avg_orders_per_min = len(orders)
                 avg_positions_per_order = sum(orders) / avg_orders_per_min
                 increase = (avg_orders_per_min * avg_positions_per_order) / 10
-                priemer_data[user_id] = min(150, priemer_data[user_id] + increase)
+                priemer_data[user_id] = int(min(150, priemer_data[user_id] + increase))
             else:
-                priemer_data[user_id] = max(0, priemer_data[user_id] - 1)
+                priemer_data[user_id] = int(max(0, priemer_data[user_id] - 1))
         save_priemer()
         order_history.clear()
 
@@ -495,9 +495,12 @@ loop = asyncio.get_event_loop()
 loop.create_task(update_priemer())
 
 @bot.command()
-async def priemer(ctx, user_id):
-    user_premier = priemer_data.get(user_id, 0)
-    return f"Priemer {ctx.author.mention}: {user_premier}"
+async def priemer(ctx):
+    user_id = str(ctx.author.id)
+    if user_id in priemer_data:
+        await ctx.send(f"Priemer {ctx.author.mention}: {priemer_data[user_id]}")
+    else:
+        await ctx.send("Вы еще не начали работать!")
 
 def generate_order():
     num_positions = random.randint(1, 30)
