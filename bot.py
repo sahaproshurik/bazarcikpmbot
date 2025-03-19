@@ -815,6 +815,11 @@ def get_interest_rate(age_on_server):
 async def applyloan(ctx, loan_amount: int, loan_term: int):
     user_id = str(ctx.author.id)
 
+    # Проверяем, есть ли уже активный кредит
+    if user_id in player_loans and player_loans[user_id]:
+        await ctx.send(f"{ctx.author.mention}, у вас уже есть активный кредит. Погасите его, прежде чем брать новый.")
+        return
+
     if loan_term > 7:
         await ctx.send("Максимальный срок кредита — 7 дней.")
         return
@@ -823,32 +828,28 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
     if age_on_server is None:
         await ctx.send(f"{ctx.author.mention}, не удалось получить информацию о вашем возрасте на сервере.")
         return
-    max_loan = get_max_loan_amount(age_on_server)
 
+    max_loan = get_max_loan_amount(age_on_server)
     if loan_amount > max_loan:
         await ctx.send(f"Вы можете взять кредит не более {max_loan}.")
         return
 
     interest_rate = get_interest_rate(age_on_server)
     daily_payment = calculate_daily_payment(loan_amount, loan_term, interest_rate)
-
-    if user_id not in player_loans:
-        player_loans[user_id] = []
-
     due_date = (datetime.now() + timedelta(days=loan_term)).strftime("%Y-%m-%d")
-    player_loans[user_id].append({
+
+    # Записываем новый кредит
+    player_loans[user_id] = [{
         "loan_amount": loan_amount,
         "interest_rate": interest_rate,
         "daily_payment": daily_payment,
         "loan_term": loan_term,
         "due_date": due_date,
         "paid_amount": 0
-    })
+    }]
 
     # Добавляем деньги пользователю
-    if user_id not in player_funds:
-        player_funds[user_id] = 0
-    player_funds[user_id] += loan_amount
+    player_funds[user_id] = player_funds.get(user_id, 0) + loan_amount
 
     save_funds()
     save_loans()
@@ -857,6 +858,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
         f"{ctx.author.mention} взял кредит на {loan_amount} денег. Ежедневный платеж: {daily_payment} денег.\n"
         f"Дата погашения: {due_date}. Ваш текущий баланс: {player_funds[user_id]} денег."
     )
+
 
 
 
