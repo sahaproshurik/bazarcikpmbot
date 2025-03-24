@@ -272,9 +272,10 @@ async def text_image(ctx, *, text: str):
         img.save(image_binary, 'PNG')
         image_binary.seek(0)
 
-        # Отправляем изображение в Discord
+        # Создаем файл и отправляем его в Discord
         image_binary.name = 'text_image.png'  # Указываем имя файла
-        await ctx.send(file=discord.File(image_binary))
+        discord_file = discord.File(image_binary, filename='text_image.png')  # Указываем имя файла
+        await ctx.send(file=discord_file)
 
 
 '''
