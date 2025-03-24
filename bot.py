@@ -273,8 +273,7 @@ async def text_image(ctx, *, text: str):
         image_binary.seek(0)
 
         # Создаем файл и отправляем его в Discord
-        image_binary.name = 'text_image.png'  # Указываем имя файла
-        discord_file = discord.File(image_binary, filename='text_image.png')  # Указываем имя файла
+        discord_file = discord.File(fp=image_binary, filename='text_image.png')  # Используем fp вместо просто потока
         await ctx.send(file=discord_file)
 
 
