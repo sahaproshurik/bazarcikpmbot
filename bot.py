@@ -252,29 +252,6 @@ def save_data(file, data):
         json.dump(data, f)
 
 
-@bot.command()
-async def text_image(ctx, *, text: str):
-    # Создаем новое изображение
-    img = Image.new('RGB', (500, 200), color=(255, 255, 255))
-    draw = ImageDraw.Draw(img)
-
-    # Выбор шрифта и размера
-    try:
-        font = ImageFont.truetype("arial.ttf", 40)
-    except IOError:
-        font = ImageFont.load_default()
-
-    # Добавляем текст на изображение
-    draw.text((10, 80), text, font=font, fill=(0, 0, 0))
-
-    # Сохраняем изображение в память
-    with io.BytesIO() as image_binary:
-        img.save(image_binary, 'PNG')
-        image_binary.seek(0)
-
-        # Создаем файл и отправляем его в Discord
-        discord_file = discord.File(fp=image_binary, filename='text_image.png')  # Используем fp вместо просто потока
-        await ctx.send(file=discord_file)
 
 
 '''
