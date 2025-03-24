@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import time
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
@@ -235,9 +237,6 @@ def save_funds():
 # Загружаем фишки при запуске бота
 player_funds = load_funds()
 
-BUSINESS_FILE = "player_businesses.json"
-
-
 # Загрузка данных
 def load_data(file):
     try:
@@ -252,7 +251,31 @@ def save_data(file, data):
         json.dump(data, f)
 
 
+@bot.command()
+async def text_image(ctx, *, text: str):
+    # Создаем новое изображение
+    img = Image.new('RGB', (500, 200), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
 
+    # Выбор шрифта и размера
+    try:
+        font = ImageFont.truetype("arial.ttf", 40)
+    except IOError:
+        font = ImageFont.load_default()
+
+    # Добавляем текст на изображение
+    draw.text((10, 80), text, font=font, fill=(0, 0, 0))
+
+    # Сохраняем изображение в память
+    with io.BytesIO() as image_binary:
+        img.save(image_binary, 'PNG')
+        image_binary.seek(0)
+
+        # Отправляем изображение в Discord
+        await ctx.send(file=discord.File(image_binary, 'text_image.png'))
+
+
+'''
 player_businesses = load_data(BUSINESS_FILE)
 
 # Бизнесы и их параметры
@@ -278,8 +301,15 @@ def calculate_next_business_cost(user_id, base_cost):
 
 
 # Команда: Купить бизнес
+def is_business_name_unique(user_id, business_name):
+    if user_id not in player_businesses:
+        return True
+    return all(business['name'] != business_name for business in player_businesses[user_id])
+
+
+# Команда: Купить бизнес с уникальным названием
 @bot.command()
-async def buy_business(ctx, *, business_name: str):
+async def buy_business(ctx, business_name: str, *, custom_name: str):
     user_id = str(ctx.author.id)
 
     if business_name not in business_types:
@@ -288,6 +318,10 @@ async def buy_business(ctx, *, business_name: str):
 
     if len(player_businesses.get(user_id, [])) >= 3:
         await ctx.send("🚫 У вас уже 3 бизнеса!")
+        return
+
+    if not is_business_name_unique(user_id, custom_name):
+        await ctx.send(f"❌ Название '{custom_name}' уже занято. Пожалуйста, выберите другое название.")
         return
 
     base_cost = business_types[business_name]["base_cost"]
@@ -302,7 +336,8 @@ async def buy_business(ctx, *, business_name: str):
     if user_id not in player_businesses:
         player_businesses[user_id] = []
     player_businesses[user_id].append({
-        "name": business_name,
+        "name": custom_name,
+        "business_type": business_name,
         "profit": business_types[business_name]["base_profit"],
         "taxes": business_types[business_name]["taxes"],
         "service_cost": business_types[business_name]["service_cost"],
@@ -313,7 +348,23 @@ async def buy_business(ctx, *, business_name: str):
     save_data(FUNDS_FILE, player_funds)
     save_data(BUSINESS_FILE, player_businesses)
 
-    await ctx.send(f"✅ {business_name} куплен за {final_cost}!")
+    await ctx.send(f"✅ Бизнес '{custom_name}' ({business_name}) куплен за {final_cost}!")
+
+
+# Команда: Информация о всех бизнесах
+@bot.command()
+async def business_info(ctx):
+    business_info_message = "**Информация о всех доступных бизнесах:**\n"
+
+    for business_name, business_data in business_types.items():
+        business_info_message += f"🏢 **{business_name}**\n"
+        business_info_message += f"   - **Стоимость**: {business_data['base_cost']} 💰\n"
+        business_info_message += f"   - **Прибыль**: {business_data['base_profit']} 💸\n"
+        business_info_message += f"   - **Налоги**: {business_data['taxes']} 💵\n"
+        business_info_message += f"   - **Стоимость обслуживания**: {business_data['service_cost']} 💼\n"
+        business_info_message += f"   - **Стоимость улучшения**: {business_data['upgrade_cost']} 🛠\n\n"
+
+    await ctx.send(business_info_message)
 
 
 # Команда: Продать бизнес
@@ -557,7 +608,7 @@ async def items(ctx):
 async def tax_deduction():
     now = datetime.now(timezone.utc)
 
-    if now.hour == 0 and now.minute == 0:  # Списание налогов каждую полночь
+    if now.hour == 19 and now.minute == 0:  # Списание налогов каждую полночь
         for user_id, businesses in player_businesses.items():
             total_taxes = 0
             for business in businesses:
@@ -598,28 +649,6 @@ async def repair_business(ctx, *, business_name: str):
     await ctx.send("❌ У вас нет такого бизнеса.")
 
 
-# Команда: Рассчитать прибыль
-@bot.command()
-async def daily_profit(ctx):
-    user_id = str(ctx.author.id)
-
-    if user_id not in player_businesses or not player_businesses[user_id]:
-        await ctx.send("❌ У вас нет бизнеса.")
-        return
-
-    total_profit = 0
-    for business in player_businesses[user_id]:
-        player_funds[user_id] -= business["taxes"]
-        player_funds[user_id] -= business["service_cost"]
-        total_profit += business["profit"]
-
-    player_funds[user_id] += total_profit
-
-    save_data(FUNDS_FILE, player_funds)
-
-    await ctx.send(f"💰 Сегодняшняя прибыль: {total_profit}!")
-
-
 @bot.command()
 async def business_help(ctx):
     # Открываем файл и читаем его содержимое
@@ -632,6 +661,10 @@ async def business_help(ctx):
 
     except FileNotFoundError:
         await ctx.send("Извините, файл с помощью не найден.")
+'''
+
+
+
 
 # Функция для создания новой колоды
 def create_deck():
@@ -1544,7 +1577,7 @@ async def on_ready():
     # Запуск задачи при запуске бота
     send_loan_warnings.start()
     scheduler.start()
-    tax_deduction.start()
+
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
 load_dotenv()
