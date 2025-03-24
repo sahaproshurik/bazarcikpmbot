@@ -571,8 +571,6 @@ async def tax_deduction():
             if channel:
                 await channel.send(f"{user_mention}, у вас списано {total_taxes} налогов. Ваш баланс: {player_funds[user_id]}.")
 
-# Запуск задачи
-tax_deduction.start()
 
 # Команда: Ремонт бизнеса
 @bot.command()
@@ -1546,6 +1544,7 @@ async def on_ready():
     # Запуск задачи при запуске бота
     send_loan_warnings.start()
     scheduler.start()
+    tax_deduction.start()
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
 load_dotenv()
