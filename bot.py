@@ -7,7 +7,7 @@ from nextcord.ui import View, Button  # Добавляем импорт View и 
 import asyncio
 from collections import Counter
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
