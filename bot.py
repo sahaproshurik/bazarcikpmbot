@@ -15,6 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 import time
 from PIL import Image, ImageDraw, ImageFont
 import io
+import discord
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
