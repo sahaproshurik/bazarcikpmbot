@@ -555,7 +555,7 @@ async def items(ctx):
 
 @tasks.loop(hours=24)
 async def tax_deduction():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     if now.hour == 0 and now.minute == 0:  # Списание налогов каждую полночь
         for user_id, businesses in player_businesses.items():
