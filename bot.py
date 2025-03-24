@@ -12,6 +12,7 @@ import os
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+import time
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
@@ -233,6 +234,426 @@ def save_funds():
 
 # Загружаем фишки при запуске бота
 player_funds = load_funds()
+
+BUSINESS_FILE = "player_businesses.json"
+
+
+# Загрузка данных
+def load_data(file):
+    try:
+        with open(file, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_data(file, data):
+    with open(file, "w") as f:
+        json.dump(data, f)
+
+
+
+player_businesses = load_data(BUSINESS_FILE)
+
+# Бизнесы и их параметры
+business_types = {
+    "Киоск с едой": {"base_cost": 200, "base_profit": 20, "taxes": 10, "service_cost": 5, "upgrade_cost": 100},
+    "Автомойка": {"base_cost": 300, "base_profit": 25, "taxes": 8, "service_cost": 7, "upgrade_cost": 120},
+    "Лотерейный магазин": {"base_cost": 400, "base_profit": 30, "taxes": 12, "service_cost": 6, "upgrade_cost": 150},
+    "Офис IT-услуг": {"base_cost": 500, "base_profit": 40, "taxes": 15, "service_cost": 10, "upgrade_cost": 200},
+    "Фитнес-клуб": {"base_cost": 350, "base_profit": 28, "taxes": 5, "service_cost": 8, "upgrade_cost": 140}
+}
+
+business_rewards = {
+    "Киоск с едой": "Рекламный щит",
+    "Автомойка": "Книга по менеджменту",
+    "Лотерейный магазин": "Лотерейные билеты",
+    "Офис IT-услуг": "Рабочие инструменты",
+    "Фитнес-клуб": "Фирменный костюм"
+}
+
+
+# Функции расчёта стоимости бизнеса
+def calculate_next_business_cost(user_id, base_cost):
+    count = len(player_businesses.get(str(user_id), []))
+    if count == 0:
+        return base_cost
+    elif count == 1:
+        return base_cost * 5
+    else:
+        return base_cost * 10
+
+
+# Команда: Купить бизнес
+@bot.command()
+async def buy_business(ctx, *, business_name: str):
+    user_id = str(ctx.author.id)
+
+    if business_name not in business_types:
+        await ctx.send("❌ Такого бизнеса нет!")
+        return
+
+    if len(player_businesses.get(user_id, [])) >= 3:
+        await ctx.send("🚫 У вас уже 3 бизнеса!")
+        return
+
+    base_cost = business_types[business_name]["base_cost"]
+    final_cost = calculate_next_business_cost(user_id, base_cost)
+
+    if player_funds.get(user_id, 0) < final_cost:
+        await ctx.send(f"❌ Не хватает денег (нужно {final_cost})!")
+        return
+
+    # Покупка бизнеса
+    player_funds[user_id] -= final_cost
+    if user_id not in player_businesses:
+        player_businesses[user_id] = []
+    player_businesses[user_id].append({
+        "name": business_name,
+        "profit": business_types[business_name]["base_profit"],
+        "taxes": business_types[business_name]["taxes"],
+        "service_cost": business_types[business_name]["service_cost"],
+        "upgraded": False,
+        "upgrade_cost": business_types[business_name]["upgrade_cost"]
+    })
+
+    save_data(FUNDS_FILE, player_funds)
+    save_data(BUSINESS_FILE, player_businesses)
+
+    await ctx.send(f"✅ {business_name} куплен за {final_cost}!")
+
+
+# Команда: Продать бизнес
+@bot.command()
+async def sell_business(ctx, *, business_name: str):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_businesses or not player_businesses[user_id]:
+        await ctx.send("❌ У вас нет бизнеса для продажи.")
+        return
+
+    for business in player_businesses[user_id]:
+        if business["name"] == business_name:
+            sale_price = int(business_types[business_name]["base_cost"] * 0.7)
+            player_funds[user_id] += sale_price
+            player_businesses[user_id].remove(business)
+
+            save_data(FUNDS_FILE, player_funds)
+            save_data(BUSINESS_FILE, player_businesses)
+
+            await ctx.send(f"💰 {business_name} продан за {sale_price}!")
+            return
+
+    await ctx.send("❌ У вас нет такого бизнеса.")
+
+
+# Команда: Улучшить бизнес
+@bot.command()
+async def upgrade_business(ctx, *, business_name: str):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_businesses:
+        await ctx.send("❌ У вас нет бизнеса.")
+        return
+
+    for business in player_businesses[user_id]:
+        if business["name"] == business_name:
+            last_upgrade = business.get("last_upgrade", 0)
+            if time.time() - last_upgrade < 86400:
+                await ctx.send("⏳ Улучшать можно раз в сутки!")
+                return
+
+            upgrade_count = business.get("upgrade_count", 0)
+            upgrade_cost = int(business_types[business_name]["upgrade_cost"] * (1.5 ** upgrade_count))
+            profit_multiplier = max(1.2, 2 - (0.2 * upgrade_count))
+
+            if player_funds.get(user_id, 0) < upgrade_cost:
+                await ctx.send(f"❌ Не хватает денег (нужно {upgrade_cost})!")
+                return
+
+            player_funds[user_id] -= upgrade_cost
+            business["profit"] = int(business["profit"] * profit_multiplier)
+            business["upgrade_count"] = upgrade_count + 1
+            business["last_upgrade"] = time.time()
+
+            # Уникальные предметы, которые могут выпадать
+            if random.random() < 0.1:  # 10% шанс на выпадение уникального предмета
+                item = use_unique_item(user_id, business_name)
+                await ctx.send(item)
+
+            save_data(FUNDS_FILE, player_funds)
+            save_data(BUSINESS_FILE, player_businesses)
+
+            await ctx.send(f"🔧 {business_name} улучшен! 📈 Новая прибыль: {business['profit']} 💰")
+            return
+
+    await ctx.send("❌ У вас нет такого бизнеса.")
+
+
+# Конкуренция на выходных
+@tasks.loop(hours=24)
+async def weekend_competition():
+    now = datetime.utcnow()
+    if now.weekday() == 6 and now.hour == 23 and now.minute == 59:
+        earnings = {}
+
+        for user_id, businesses in player_businesses.items():
+            earnings[user_id] = sum(b["profit"] for b in businesses)
+
+        sorted_earnings = sorted(earnings.items(), key=lambda x: x[1], reverse=True)
+
+        rewards = {
+            0: {"upgrades": 3, "money": 500},
+            1: {"upgrades": 1, "money": 200},
+            2: {"upgrades": 0, "money": 100}
+        }
+
+        results = "**🏆 Итоги соревнования:**\n"
+        for i, (user_id, total_profit) in enumerate(sorted_earnings[:3]):
+            reward = rewards.get(i, {"upgrades": 0, "money": 0})
+            player_funds[user_id] = player_funds.get(user_id, 0) + reward["money"]
+
+            if user_id in player_businesses and player_businesses[user_id]:
+                for _ in range(reward["upgrades"]):
+                    business = random.choice(player_businesses[user_id])
+                    business["profit"] = int(business["profit"] * 1.2)
+
+            save_data(FUNDS_FILE, player_funds)
+            save_data(BUSINESS_FILE, player_businesses)
+
+            results += f"🥇 **{i + 1} место** – <@{user_id}> 💰 **{total_profit}** прибыли. 🏆 Приз: {reward['money']} денег и {reward['upgrades']} улучшений\n"
+
+        channel = bot.get_channel(1353724972677201980)
+        if channel:
+            await channel.send(results)
+
+
+# Команда: Просмотреть бизнесы
+server_effects = {}  # Для хранения активных эффектов на сервере
+
+# Бизнесы и их параметры
+business_types = {
+    "Киоск с едой": {"base_cost": 200, "base_profit": 20, "taxes": 10, "service_cost": 5, "upgrade_cost": 100,
+                     "repair_cost": 0.2},
+    "Автомойка": {"base_cost": 300, "base_profit": 25, "taxes": 8, "service_cost": 7, "upgrade_cost": 120,
+                  "repair_cost": 0.25},
+    "Лотерейный магазин": {"base_cost": 400, "base_profit": 30, "taxes": 12, "service_cost": 6, "upgrade_cost": 150,
+                           "repair_cost": 0.3},
+    "Офис IT-услуг": {"base_cost": 500, "base_profit": 40, "taxes": 15, "service_cost": 10, "upgrade_cost": 200,
+                      "repair_cost": 0.35},
+    "Фитнес-клуб": {"base_cost": 350, "base_profit": 28, "taxes": 5, "service_cost": 8, "upgrade_cost": 140,
+                    "repair_cost": 0.15}
+}
+
+# Уникальные предметы и их эффекты
+unique_items = {
+    "Киоск с едой": {
+        "item_name": "Фирменный фургон",
+        "effect": "increase_speed",
+        "duration": 86400,  # 24 часа в секундах
+        "description": "Увеличивает скорость всех операций на сервере на 10% в течение 24 часов."
+    },
+    "Автомойка": {
+        "item_name": "Промо-карты для Автомойки",
+        "effect": "double_profit",
+        "duration": 3600,  # 1 час в секундах
+        "description": "Активирует 2x бонус к прибыли для всех игроков на сервере на 1 час."
+    },
+    "Лотерейный магазин": {
+        "item_name": "Золотой билет",
+        "effect": "increase_item_chance",
+        "duration": 86400,  # 24 часа в секундах
+        "description": "Увеличивает шанс выпадения редких предметов на 10% на 24 часа."
+    },
+    "Офис IT-услуг": {
+        "item_name": "Виртуальный сервер",
+        "effect": "speed_up_upgrades",
+        "duration": 86400,  # 24 часа в секундах
+        "description": "Ускоряет все улучшения бизнеса на 20% на сервере на 24 часа."
+    },
+    "Фитнес-клуб": {
+        "item_name": "Персональный тренер",
+        "effect": "increase_event_frequency",
+        "duration": 86400,  # 24 часа в секундах
+        "description": "Увеличивает количество ежедневных прибыльных событий для всех бизнесов на 10% в течение 24 часов."
+    }
+}
+
+
+# Функции для применения эффектов
+def apply_effect(effect_name, duration):
+    end_time = time.time() + duration
+    server_effects[effect_name] = end_time
+    save_data("server_effects.json", server_effects)
+
+
+def check_active_effects():
+    current_time = time.time()
+    expired_effects = [effect for effect, end_time in server_effects.items() if end_time < current_time]
+
+    for effect in expired_effects:
+        del server_effects[effect]
+
+    save_data("server_effects.json", server_effects)
+
+
+# Применение эффектов
+def use_unique_item(user_id, business_name):
+    if business_name not in unique_items:
+        return "❌ Такой бизнес не существует."
+
+    item = unique_items[business_name]
+    effect = item["effect"]
+    duration = item["duration"]
+    apply_effect(effect, duration)
+
+    return f"🛠 Уникальный предмет **{item['item_name']}** использован! Эффект: {item['description']}."
+
+
+# Команда: Использовать уникальный предмет
+@bot.command()
+async def use_unique_item(ctx, business_name: str):
+    user_id = str(ctx.author.id)
+    message = use_unique_item(user_id, business_name)
+    await ctx.send(message)
+
+
+# Команда: Просмотр активных эффектов
+@bot.command()
+async def active_effects(ctx):
+    check_active_effects()
+
+    if not server_effects:
+        await ctx.send("❌ Нет активных эффектов на сервере.")
+        return
+
+    effect_list = "\n".join(
+        f"🔮 {effect} до {datetime.utcfromtimestamp(end_time).strftime('%Y-%m-%d %H:%M:%S')}"
+        for effect, end_time in server_effects.items()
+    )
+
+    await ctx.send(f"**Активные эффекты на сервере:**\n{effect_list}")
+
+
+# Команда: Бизнесы игрока
+@bot.command()
+async def businesses(ctx):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_businesses or not player_businesses[user_id]:
+        await ctx.send("❌ У вас нет бизнеса.")
+        return
+
+    business_list = "\n".join(
+        f"🏢 {b['name']} | 💰 {b['profit']} | 🏗 {'Улучшен' if b['upgraded'] else 'Обычный'}"
+        for b in player_businesses[user_id]
+    )
+    await ctx.send(f"**Ваши бизнесы:**\n{business_list}")
+
+
+# Команда: Просмотр предметов
+@bot.command()
+async def items(ctx):
+    items_list = "\n".join(
+        f"🎁 {item['item_name']} - {item['description']}"
+        for item in unique_items.values()
+    )
+    await ctx.send(f"**Доступные уникальные предметы:**\n{items_list}")
+
+@tasks.loop(hours=24)
+async def tax_deduction():
+    now = datetime.utcnow()
+
+    if now.hour == 0 and now.minute == 0:  # Списание налогов каждую полночь
+        for user_id, businesses in player_businesses.items():
+            total_taxes = 0
+            for business in businesses:
+                total_taxes += business["taxes"]
+                player_funds[user_id] -= business["taxes"]
+
+            save_data(FUNDS_FILE, player_funds)
+
+            channel = bot.get_channel(1353724972677201980)  # Укажите свой канал
+            user_mention = f"<@{user_id}>"
+            if channel:
+                await channel.send(f"{user_mention}, у вас списано {total_taxes} налогов. Ваш баланс: {player_funds[user_id]}.")
+
+# Запуск задачи
+tax_deduction.start()
+
+# Команда: Ремонт бизнеса
+@bot.command()
+async def repair_business(ctx, *, business_name: str):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_businesses or not player_businesses[user_id]:
+        await ctx.send("❌ У вас нет бизнеса.")
+        return
+
+    for business in player_businesses[user_id]:
+        if business["name"] == business_name:
+            repair_cost = int(business_types[business_name]["base_cost"] * business["repair_cost"])
+
+            if player_funds.get(user_id, 0) < repair_cost:
+                await ctx.send(f"❌ Не хватает денег для ремонта (нужно {repair_cost})!")
+                return
+
+            player_funds[user_id] -= repair_cost
+            save_data(FUNDS_FILE, player_funds)
+
+            await ctx.send(f"🔧 {business_name} отремонтирован! Стоимость ремонта: {repair_cost}.")
+            return
+
+    await ctx.send("❌ У вас нет такого бизнеса.")
+
+
+# Команда: Рассчитать прибыль
+@bot.command()
+async def daily_profit(ctx):
+    user_id = str(ctx.author.id)
+
+    if user_id not in player_businesses or not player_businesses[user_id]:
+        await ctx.send("❌ У вас нет бизнеса.")
+        return
+
+    total_profit = 0
+    for business in player_businesses[user_id]:
+        player_funds[user_id] -= business["taxes"]
+        player_funds[user_id] -= business["service_cost"]
+        total_profit += business["profit"]
+
+    player_funds[user_id] += total_profit
+
+    save_data(FUNDS_FILE, player_funds)
+
+    await ctx.send(f"💰 Сегодняшняя прибыль: {total_profit}!")
+
+
+@bot.command()
+async def business_help(ctx):
+    help_message = (
+        "💼 **Информация о бизнесах**:\n\n"
+        "В игре доступны 5 типов бизнесов, которые можно покупать и улучшать:\n"
+        "1. **Киоск с едой** - Низкие вложения, стабильный доход. \n"
+        "2. **Автомойка** - Пассивный доход, но иногда требует ремонта. \n"
+        "3. **Лотерейный магазин** - Процент с продажи лотерейных билетов. \n"
+        "4. **Офис IT-услуг** - Для игроков, работающих в сфере технологий. \n"
+        "5. **Фитнес-клуб** - Дополнительные бонусы на работу и улучшения.\n\n"
+
+        "🛠 **Улучшение бизнеса**:\n"
+        "Каждый бизнес можно улучшать раз в сутки. Каждый раз прибыль будет увеличиваться, но с каждым улучшением она будет уменьшаться. Стоимость улучшений также будет расти.\n\n"
+
+        "🎯 **Как участвовать в конкуренции**:\n"
+        "Каждые выходные игроки с бизнесами будут соревноваться, кто заработает больше. Топ 3 игроков получат бонусы: улучшения для бизнеса и деньги!\n\n"
+
+        "🎁 **Предметы бизнеса**:\n"
+        "При улучшении бизнеса могут выпадать предметы, которые можно использовать для получения различных бонусов.\n"
+        "1. **Бонус к прибыли** - Увеличивает прибыль бизнеса на 50%.\n"
+        "2. **Ускорение производства** - Ускоряет процесс работы бизнеса.\n"
+        "3. **Ремонт оборудования** - Улучшает оборудование и повышает стабильность бизнеса."
+    )
+
+    await ctx.send(help_message)
 
 # Функция для создания новой колоды
 def create_deck():
