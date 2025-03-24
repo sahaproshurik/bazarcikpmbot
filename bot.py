@@ -294,7 +294,7 @@ async def blackjack(ctx, bet: int):
         if tax > 0:
             player_funds[str(ctx.author.id)] -= tax
             save_funds()
-            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+            await ctx.send(f"Налог с выигрыша: {tax} денег.")
         await ctx.send(
             f"Поздравляем, у {ctx.author.mention} Блэкджек! Вы выиграли {winnings} денег! Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
         return
@@ -340,7 +340,7 @@ async def blackjack(ctx, bet: int):
         if tax > 0:
             player_funds[str(ctx.author.id)] -= tax
             save_funds()
-            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+            await ctx.send(f"Налог с выигрыша: {tax} денег.")
         await ctx.send(
             f"{ctx.author.mention} выиграл! Ваш выигрыш: {winnings} денег. Теперь у вас {player_funds[str(ctx.author.id)]} денег.")
     elif player_total < dealer_total:
@@ -387,7 +387,7 @@ async def flip(ctx, bet: int, choice: str):
         if tax > 0:
             player_funds[str(ctx.author.id)] -= tax
             save_funds()
-            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+            await ctx.send(f"Налог с выигрыша: {tax} денег.")
         await ctx.send(
             f"{ctx.author.mention} выиграл! Выпал {result_str}. Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
     else:
@@ -421,7 +421,7 @@ async def spin(ctx, bet: int):
         if tax > 0:
             player_funds[str(ctx.author.id)] -= tax
             save_funds()
-            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+            await ctx.send(f"Налог с выигрыша: {tax} денег.")
         await ctx.send(f"{ctx.author.mention} выиграл! Все символы совпали! Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
     elif len(set(spin_result)) == 2:  # Два одинаковых символа
         winnings = bet * 2
@@ -431,7 +431,7 @@ async def spin(ctx, bet: int):
         if tax > 0:
             player_funds[str(ctx.author.id)] -= tax
             save_funds()
-            await ctx.send(f"Налог с выигрыша ({tax}): {tax} денег.")
+            await ctx.send(f"Налог с выигрыша: {tax} денег.")
         await ctx.send(f"{ctx.author.mention} выиграл! Два символа совпали! Выигрыш: {winnings} денег. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
     else:
         await ctx.send(f"{ctx.author.mention} проиграл. У вас теперь {player_funds[str(ctx.author.id)]} денег.")
