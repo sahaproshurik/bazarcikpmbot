@@ -949,7 +949,7 @@ class PackingView(View):
                 await self.complete_order(interaction)
 
     async def complete_order(self, interaction: nextcord.Interaction):
-        earnings = random.randint(50, 100000)
+        earnings = random.randint(50, 10000)
         player_funds[str(self.user_id)] = player_funds.get(str(self.user_id), 0) + earnings
         save_funds()
 
