@@ -849,8 +849,8 @@ async def spin(ctx, bet: int):
 
 
 
-AVAILABLE_JOBS = ["пикинг"]
-UNAVAILABLE_JOBS = ["баление", "бафер", "боксы", "вратки"]
+AVAILABLE_JOBS = ["пикинг", "баление"]
+UNAVAILABLE_JOBS = ["бафер", "боксы", "вратки"]
 
 # Список товаров с брендами
 SPORT_ITEMS_WITH_BRANDS = {
@@ -871,6 +871,95 @@ ORDERS = {}
 ORDER_MESSAGES = {}
 
 PRIEMER_FILE = "priemer_data.json"
+
+def generate_baling_order():
+    num_items = random.randint(1, 30)
+    items = []
+    for _ in range(num_items):
+        brand = random.choice(list(SPORT_ITEMS_WITH_BRANDS.keys()))
+        item = random.choice(SPORT_ITEMS_WITH_BRANDS[brand])
+        items.append(f"{brand} - {item}")
+    return items
+
+class BalingView(View):
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+        self.box_selected = None
+        self.items_collected = []
+        self.box_button = Button(label="Выбрать коробку", style=nextcord.ButtonStyle.blurple)
+        self.box_button.callback = self.select_box
+        self.collect_button = Button(label="Собирать заказ", style=nextcord.ButtonStyle.green, disabled=True)
+        self.collect_button.callback = self.collect_items
+        self.send_button = Button(label="Отправить коробку", style=nextcord.ButtonStyle.red, disabled=True)
+        self.send_button.callback = self.send_box
+        self.add_item(self.box_button)
+        self.add_item(self.collect_button)
+        self.add_item(self.send_button)
+
+    async def select_box(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        order_size = len(ORDERS[user_id])
+        if order_size <= 6:
+            self.box_selected = "A"
+        elif order_size <= 12:
+            self.box_selected = "B"
+        elif order_size <= 18:
+            self.box_selected = "C"
+        elif order_size <= 24:
+            self.box_selected = "D"
+        else:
+            self.box_selected = "E"
+
+        self.box_button.disabled = True
+        self.collect_button.disabled = False
+        await interaction.message.edit(content=f"{interaction.user.mention}, выбрана коробка {self.box_selected}. Начинайте сборку заказа!", view=self)
+
+    async def collect_items(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        order_items = ORDERS[user_id]
+
+        if not order_items:
+            self.collect_button.disabled = True
+            self.send_button.disabled = False
+            await interaction.message.edit(content=f"{interaction.user.mention}, заказ собран! Отправьте коробку.", view=self)
+            return
+
+        num_to_collect = min(random.randint(1, 5), len(order_items))
+        collected = order_items[:num_to_collect]
+        self.items_collected.extend(collected)
+        del ORDERS[user_id][:num_to_collect]
+
+        remaining = len(ORDERS[user_id])
+        await interaction.message.edit(content=f"{interaction.user.mention}, собрано {len(self.items_collected)} товаров. Осталось {remaining}.", view=self)
+
+    async def send_box(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        user_id = str(interaction.user.id)
+        if user_id not in priemer_data:
+            priemer_data[user_id] = 0
+
+        earnings = random.randint(50, 100000)
+        player_funds[user_id] = player_funds.get(user_id, 0) + earnings
+        save_funds()
+
+        del ORDERS[user_id]
+        del ORDER_MESSAGES[user_id]
+
+        await interaction.message.edit(content=f"{interaction.user.mention}, заказ отправлен! Вы заработали {earnings} денег.", view=None)
+
+
 
 def load_priemer():
     try:
@@ -1132,17 +1221,21 @@ async def start_job(ctx, job: str):
         return
 
     user_id = str(ctx.author.id)
-    ORDERS[user_id] = generate_order()
-    priemer_data[user_id] = priemer_data.get(user_id, 0)  # Начальное значение priemer
+
+    if job == "пикинг":
+        ORDERS[user_id] = generate_order()
+        view = PickingView(user_id)
+        message_text = f"{ctx.author.mention}, вы начали работу на пикинге. Вам выдан заказ из {len(ORDERS[user_id])} позиций."
+
+    elif job == "баление":
+        ORDERS[user_id] = generate_baling_order()
+        view = BalingView(user_id)
+        message_text = f"{ctx.author.mention}, вы начали работу на балении. Вам выдан заказ из {len(ORDERS[user_id])} товаров."
+
+    priemer_data[user_id] = priemer_data.get(user_id, 0)
     save_priemer()
 
-    pickup_list = "\n".join([f"{i+1}. {order['location']} ({order['item']})" for i, order in enumerate(ORDERS[user_id])])
-
-    view = PickingView(user_id)
-    message = await ctx.send(
-        f"{ctx.author.mention}, вы начали работу на пикинге. Вам выдан заказ из {len(ORDERS[user_id])} позиций. Ваш priemer: {priemer_data[user_id]}\n\n**Пикап лист:**\n{pickup_list}",
-        view=view
-    )
+    message = await ctx.send(message_text, view=view)
     ORDER_MESSAGES[user_id] = message.id # Сохраняем ID сообщения  # Сохраняем ID сообщения  # Сохраняем ID сообщения
 # Проверка фишек
 
