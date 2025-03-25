@@ -886,7 +886,11 @@ class PackingView(View):
         super().__init__()
         self.user_id = user_id
         self.order_size = order_size
+        self.remaining_items = order_size
         self.selected_box = None
+
+        self.exit_button = Button(label="Выйти с работы", style=nextcord.ButtonStyle.red, disabled=True)
+        self.exit_button.callback = self.exit_job
 
         box_sizes = {
             "A": range(1, 7),
@@ -898,10 +902,15 @@ class PackingView(View):
 
         for box in box_sizes.keys():
             button = Button(label=f"Коробка {box}", style=nextcord.ButtonStyle.blurple)
-            button.callback = self.create_callback(box)
+            button.callback = self.create_box_callback(box)
             self.add_item(button)
 
-    def create_callback(self, box: str):
+        self.collect_button = Button(label="Собрать товар", style=nextcord.ButtonStyle.green, disabled=True)
+        self.collect_button.callback = self.collect_item
+        self.add_item(self.collect_button)
+        self.add_item(self.exit_button)
+
+    def create_box_callback(self, box: str):
         async def callback(interaction: nextcord.Interaction):
             await self.select_box(interaction, box)
         return callback
@@ -924,10 +933,50 @@ class PackingView(View):
             return
 
         self.selected_box = box
-        await interaction.message.edit(content=f"{interaction.user.mention}, вы выбрали коробку {box}. Теперь соберите заказ.", view=None)
+        self.collect_button.disabled = False
+        await interaction.message.edit(content=f"{interaction.user.mention}, выбрана коробка {box}. Осталось собрать: {self.remaining_items} товаров.", view=self)
 
-        view = OrderProcessingView(self.user_id)
-        await interaction.channel.send(f"{interaction.user.mention}, начните сборку заказа.", view=view)
+    async def collect_item(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        if self.remaining_items > 0:
+            self.remaining_items -= random.randint(1, min(5, self.remaining_items))  # Собираем 1-5 товаров за раз
+            if self.remaining_items > 0:
+                await interaction.message.edit(content=f"{interaction.user.mention}, осталось собрать: {self.remaining_items} товаров.", view=self)
+            else:
+                await self.complete_order(interaction)
+
+    async def complete_order(self, interaction: nextcord.Interaction):
+        earnings = random.randint(50, 100000)
+        player_funds[str(self.user_id)] = player_funds.get(str(self.user_id), 0) + earnings
+        save_funds()
+
+        self.clear_items()
+        self.exit_button.disabled = False
+        new_order_button = Button(label="Начать новый заказ", style=nextcord.ButtonStyle.green)
+        new_order_button.callback = self.start_new_order
+        self.add_item(new_order_button)
+        self.add_item(self.exit_button)
+
+        await interaction.message.edit(content=f"{interaction.user.mention}, заказ завершен! Вы заработали {earnings} денег.\nХотите начать новый заказ?", view=self)
+
+    async def start_new_order(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        new_order_size = random.randint(1, 30)
+        new_view = PackingView(self.user_id, new_order_size)
+        await interaction.message.edit(content=f"{interaction.user.mention}, новый заказ из {new_order_size} товаров. Выберите коробку.", view=new_view)
+
+    async def exit_job(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True)
+            return
+
+        await interaction.message.edit(content=f"{interaction.user.mention}, вы вышли с работы.", view=None)
 
 
 class OrderProcessingView(View):
