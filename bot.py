@@ -870,6 +870,21 @@ SPORT_ITEMS_WITH_BRANDS = {
 ORDERS = {}
 ORDER_MESSAGES = {}
 
+ORDERS_COMPLETED_FILE = "orders_completed.json"
+
+def load_orders_completed():
+    try:
+        with open(ORDERS_COMPLETED_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_orders_completed():
+    with open(ORDERS_COMPLETED_FILE, "w", encoding="utf-8") as file:
+        json.dump(USER_ORDERS_COMPLETED, file, indent=4)
+
+USER_ORDERS_COMPLETED = load_orders_completed()
+
 PRIEMER_FILE = "priemer_data.json"
 
 def generate_baling_order():
@@ -1376,9 +1391,9 @@ class PickingView(View):
 
 
 @bot.command(name="gb")
-async def start_job(ctx, job: str):
+async def start_job(ctx):
     await ctx.message.delete()
-    job = job.lower()
+    job = random.choice("пикинг", "баление")
 
     if job not in ["пикинг", "баление"]:
         await ctx.send(f"{ctx.author.mention}, такой работы не существует!")
