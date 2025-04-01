@@ -1393,7 +1393,7 @@ class PickingView(View):
 @bot.command(name="gb")
 async def start_job(ctx):
     await ctx.message.delete()
-    job = random.choice("пикинг", "баление")
+    job = random.choice(["пикинг", "баление"])
 
     if job not in ["пикинг", "баление"]:
         await ctx.send(f"{ctx.author.mention}, такой работы не существует!")
