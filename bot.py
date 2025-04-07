@@ -71,7 +71,7 @@ async def mute(ctx, member: nextcord.Member, time: int):
     await asyncio.sleep(60)
 
     # Создаем роль "Muted", если ее нет
-    mute_role = nextcord.utils.get(ctx.guild.roles, name="Muted")
+    mute_role = nextcord.utils.get(ctx.guild.roles, name="БАН банан🍌")
     if not mute_role:
         mute_role = await ctx.guild.create_role(name="Muted")
         for channel in ctx.guild.text_channels:
