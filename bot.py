@@ -2006,14 +2006,22 @@ async def petition(ctx, *, text=None):
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
+            # Получаем общее количество участников сервера
+            guild = interaction.guild
+            member_count = guild.member_count
+
+            # Вычисляем 5% от общего числа участников (округляем вверх)
+            required_votes = max(1, int(member_count * 0.2))
+
             content = (
                 f"**Петиция №{petition_id}**\n"
                 f"{text}\n\n"
-                f"Автор: <@{ctx.author.id}>\n"
-                f"Подписей: {petition_data['votes']}"
+                f"Автор: <@{petition_data['author']}>\n"
+                f"Подписей: {petition_data['votes']} / {required_votes} (20% от участников)"
             )
 
-            if petition_data["votes"] >= 3:
+            # Если набрали необходимое количество голосов, добавляем уведомление
+            if petition_data["votes"] >= required_votes:
                 content += "\n\n🔔 Петиция достигла необходимого количества голосов для рассмотрения."
 
             await interaction.response.edit_message(content=content, view=view)
@@ -2031,20 +2039,20 @@ async def petition(ctx, *, text=None):
 async def yes(ctx, petition_id: int):
     await ctx.message.delete()
     if not ctx.author.guild_permissions.administrator:
-        await ctx.send("Только администратор может использовать эту команду.")
+        await ctx.send("Только администратор может использовать эту команду.", delete_after=10)
         return
 
     try:
         with open("petitions.json", "r", encoding="utf-8") as f:
             petitions = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        await ctx.send("Нет активных петиций.")
+        await ctx.send("Нет активных петиций.", delete_after=10)
         return
 
     for petition in petitions:
         if petition["id"] == petition_id:
             if petition["status"] != "active":
-                await ctx.send("Эта петиция уже была рассмотрена.")
+                await ctx.send("Эта петиция уже была рассмотрена.", delete_after=10)
                 return
 
             petition["status"] = "approved"
@@ -2054,27 +2062,27 @@ async def yes(ctx, petition_id: int):
             await ctx.send(f"✅ Петиция №{petition_id} одобрена.")
             return
 
-    await ctx.send("Петиция не найдена.")
+    await ctx.send("Петиция не найдена.", delete_after=10)
 
 
 @bot.command()
 async def no(ctx, petition_id: int):
     await ctx.message.delete()
     if not ctx.author.guild_permissions.administrator:
-        await ctx.send("Только администратор может использовать эту команду.")
+        await ctx.send("Только администратор может использовать эту команду.", delete_after=10)
         return
 
     try:
         with open("petitions.json", "r", encoding="utf-8") as f:
             petitions = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        await ctx.send("Нет активных петиций.")
+        await ctx.send("Нет активных петиций.", delete_after=10)
         return
 
     for petition in petitions:
         if petition["id"] == petition_id:
             if petition["status"] != "active":
-                await ctx.send("Эта петиция уже была рассмотрена.")
+                await ctx.send("Эта петиция уже была рассмотрена.", delete_after=10)
                 return
 
             petition["status"] = "rejected"
@@ -2084,8 +2092,7 @@ async def no(ctx, petition_id: int):
             await ctx.send(f"❌ Петиция №{petition_id} отклонена.")
             return
 
-    await ctx.send("Петиция не найдена.")
-
+    await ctx.send("Петиция не найдена.", delete_after=10)
 
 
 # Устанавливаем кастомную команду help
