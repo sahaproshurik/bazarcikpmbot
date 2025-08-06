@@ -7,7 +7,7 @@ from nextcord.ui import View, Button  # Добавляем импорт View и 
 import asyncio
 from collections import Counter
 import json
-from datetime import datetime, timedelta, timezone
+import datetime
 import os
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1900,10 +1900,11 @@ async def on_voice_state_update(member, before, after):
         await member.move_to(new_channel)
 
         # Опционально: удалить канал, когда все выйдут
+
         async def check_empty():
             await bot.wait_until_ready()
             while True:
-                await nextcord.utils.sleep_until(nextcord.utils.utcnow() + nextcord.utils.timedelta(seconds=5))
+                await nextcord.utils.sleep_until(nextcord.utils.utcnow() + datetime.timedelta(seconds=5))
                 if len(new_channel.members) == 0:
                     await new_channel.delete()
                     break
