@@ -1954,7 +1954,15 @@ def save_counter(count):
 petition_counter = load_counter()
 
 @bot.command()
-async def petition(ctx, *, text):
+async def petition(ctx, *, text=None, interaction: nextcord.Interaction):
+    if text is None:
+        await interaction.response.send_message(
+            "❗ Неверное использование команды!\n"
+            "Правильно: `!petition <текст петиции>`\n"
+            "Пример: `!petition Добавить новые смайлики в сервер`",
+        )
+        return
+
     try:
         with open("petitions.json", "r", encoding="utf-8") as f:
             petitions = json.load(f)
@@ -2015,6 +2023,7 @@ async def petition(ctx, *, text):
         f"**Петиция №{petition_id}**\n{text}\n\nАвтор: <@{ctx.author.id}>\nПодписей: 0",
         view=view
     )
+
 
 @bot.command()
 async def yes(ctx, petition_id: int):
