@@ -1909,7 +1909,7 @@ async def on_voice_state_update(member, before, after):
         while new_number in existing_numbers:
             new_number += 1
 
-        new_channel_name = f"{prefix}{new_number}"
+        new_channel_name = f"{auto_channel.name}{prefix}{new_number}"
 
         # Права доступа
         overwrites = {
