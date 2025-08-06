@@ -1879,37 +1879,50 @@ CATEGORY_ID = 1310705688296820897  # замените на нужную кате
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Заход на канал
     if after.channel and after.channel.id == AUTO_VOICE_CHANNEL_ID:
         guild = member.guild
         category = guild.get_channel(CATEGORY_ID)
 
-        # Создание нового голосового канала
+        # Собираем номера уже существующих комнат
+        existing_numbers = []
+        for channel in category.voice_channels:
+            if channel.name.startswith("🔊Poslucháreň_ZP"):
+                try:
+                    number = int(channel.name.replace("🔊Poslucháreň_ZP", ""))
+                    existing_numbers.append(number)
+                except ValueError:
+                    continue
+
+        # Ищем минимально свободный номер
+        new_number = 1
+        while new_number in existing_numbers:
+            new_number += 1
+
+        new_channel_name = f"🔊Poslucháreň_ZP{new_number}"
+
+        # Создаем канал с нужными правами
         overwrites = {
             guild.default_role: nextcord.PermissionOverwrite(connect=False),
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
         new_channel = await guild.create_voice_channel(
-            name=f"Комната {member.display_name}",
+            name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
 
-        # Переместить пользователя в новый канал
+        # Перемещаем пользователя
         await member.move_to(new_channel)
 
-        # Опционально: удалить канал, когда все выйдут
-
+        # Удаляем комнату, если она пустая (через 5 секунд)
         async def check_empty():
-            await bot.wait_until_ready()
-            while True:
-                await nextcord.utils.sleep_until(nextcord.utils.utcnow() + timedelta(seconds=5))
-                if len(new_channel.members) == 0:
-                    await new_channel.delete()
-                    break
+            await asyncio.sleep(5)
+            if len(new_channel.members) == 0:
+                await new_channel.delete()
 
-        bot.loop.create_task(check_empty())
+        asyncio.create_task(check_empty())
+
 
 
 # Устанавливаем кастомную команду help
