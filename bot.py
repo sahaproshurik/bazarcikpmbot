@@ -1815,6 +1815,7 @@ async def server_info(ctx):
 
     await ctx.send(embed=embed)
 
+
 class MyHelpCommand(commands.HelpCommand):
     async def send_bot_help(self, mapping):
         try:
@@ -1822,9 +1823,19 @@ class MyHelpCommand(commands.HelpCommand):
                 help_text = file.read()
         except FileNotFoundError:
             help_text = "Файл помощи не найден. Обратитесь к администратору."
-        
-        # Отправка помощи в канал
-        await self.get_destination().send(help_text)
+
+        user = self.context.author  # получаем автора команды
+
+        try:
+            await user.message.delete()
+        except nextcord.Forbidden:
+            print("Нет прав на удаление сообщения.")
+
+        try:
+            await user.send(help_text)  # отправка в ЛС
+        except nextcord.Forbidden:
+            await self.context.send(
+                f"{user.mention}, я не могу отправить тебе сообщение в ЛС. Разреши их в настройках приватности.")
 
 
 @bot.event
@@ -1833,6 +1844,13 @@ async def on_ready():
     # Запуск задачи при запуске бота
     send_loan_warnings.start()
     scheduler.start()
+
+@bot.event
+async def on_member_join(member):
+    try:
+        await member.send(f'Привет, {member.name}! Добро пожаловать на сервер!')
+    except nextcord.Forbidden:
+        print(f'Не удалось отправить ЛС пользователю {member.name}.')
 
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
