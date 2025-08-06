@@ -2013,7 +2013,7 @@ async def petition(ctx, *, text=None):
                 f"Подписей: {petition_data['votes']}"
             )
 
-            if petition_data["votes"] >= 10:
+            if petition_data["votes"] >= 3:
                 content += "\n\n🔔 Петиция достигла необходимого количества голосов для рассмотрения."
 
             await interaction.response.edit_message(content=content, view=view)
@@ -2029,6 +2029,7 @@ async def petition(ctx, *, text=None):
 
 @bot.command()
 async def yes(ctx, petition_id: int):
+    await ctx.message.delete()
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Только администратор может использовать эту команду.")
         return
@@ -2058,6 +2059,7 @@ async def yes(ctx, petition_id: int):
 
 @bot.command()
 async def no(ctx, petition_id: int):
+    await ctx.message.delete()
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Только администратор может использовать эту команду.")
         return
