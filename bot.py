@@ -2052,14 +2052,18 @@ async def yes(ctx, petition_id: int):
     for petition in petitions:
         if petition["id"] == petition_id:
             if petition["status"] != "active":
-                await ctx.send("Эта петиция уже была рассмотрена.", delete_after=10)
+                reviewer = petition.get("reviewed_by")
+                reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
+                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
                 return
 
             petition["status"] = "approved"
+            petition["reviewed_by"] = ctx.author.id
+
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            await ctx.send(f"✅ Петиция №{petition_id} одобрена.")
+            await ctx.send(f"✅ Петиция №{petition_id} одобрена администратором {ctx.author.mention}.")
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
@@ -2082,17 +2086,22 @@ async def no(ctx, petition_id: int):
     for petition in petitions:
         if petition["id"] == petition_id:
             if petition["status"] != "active":
-                await ctx.send("Эта петиция уже была рассмотрена.", delete_after=10)
+                reviewer = petition.get("reviewed_by")
+                reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
+                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
                 return
 
             petition["status"] = "rejected"
+            petition["reviewed_by"] = ctx.author.id
+
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            await ctx.send(f"❌ Петиция №{petition_id} отклонена.")
+            await ctx.send(f"❌ Петиция №{petition_id} отклонена администратором {ctx.author.mention}.")
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
+
 
 
 # Устанавливаем кастомную команду help
