@@ -1,15 +1,12 @@
 import nextcord
-import pytz
-from discord.ext import commands, tasks
-import random
-from nextcord.ext import commands
+from nextcord.ext import commands, tasks
 from nextcord.ui import View, Button
 from nextcord import Interaction, SlashOption
-from nextcord.ext import commands
-# Добавляем импорт View и Button
+
 import asyncio
-from collections import Counter
+import random
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import os
 from dotenv import load_dotenv
@@ -18,7 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 import time
 from PIL import Image, ImageDraw, ImageFont
 import io
-import discord
+import pytz
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
@@ -1956,72 +1953,60 @@ def save_counter(count):
 # Загружаем при старте
 petition_counter = load_counter()
 
-@bot.command(name="petition")
-async def petition(ctx, часы: float = None, *, текст: str = None):
-    global petition_counter
-
-    if часы is None or текст is None:
-        await ctx.send(
-            "❗ Правильное использование: `!petition <часы> <текст>`\n"
-            "Пример: `!petition 2 Поднять зарплату всем!`",
-            ephemeral=True if isinstance(ctx, nextcord.ApplicationContext) else False
-        )
-        return
-
-    if часы < 1:
-        await ctx.send("❌ Минимальное время петиции — **1 час**.", ephemeral=True if isinstance(ctx, nextcord.ApplicationContext) else False)
-        return
-
-    petition_counter += 1
-    save_counter(petition_counter)
-    номер = petition_counter
-
-    секунды = int(часы * 3600)
-
-    embed = nextcord.Embed(
-        title=f"📝 Петиция №{номер}",
-        description=текст,
-        color=nextcord.Color.blue()
-    )
-    embed.set_footer(text=f"Создал: {ctx.author.display_name} | Голосование длится {часы} ч.")
-    message = await ctx.send(embed=embed)
-
-    await message.add_reaction("👍")
-    await message.add_reaction("👎")
-
+@bot.command()
+async def petition(ctx, *, text):
     try:
-        await ctx.author.send(f"Петиция №{номер} создана и будет длиться {часы} ч.")
-    except:
-        pass
+        with open("petitions.json", "r", encoding="utf-8") as f:
+            petitions = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        petitions = []
 
-    await asyncio.sleep(секунды)
+    petition_id = len(petitions) + 1
 
-    try:
-        message = await ctx.channel.fetch_message(message.id)
-    except:
-        return  # сообщение удалено
+    petition_data = {
+        "id": petition_id,
+        "author": ctx.author.id,
+        "text": text,
+        "votes": 0,
+        "voters": []
+    }
 
-    upvotes = 0
-    downvotes = 0
-    for reaction in message.reactions:
-        if str(reaction.emoji) == "👍":
-            upvotes = reaction.count - 1
-        elif str(reaction.emoji) == "👎":
-            downvotes = reaction.count - 1
+    petitions.append(petition_data)
 
-    result = (
-        f"✅ За: {upvotes}\n"
-        f"❌ Против: {downvotes}\n\n"
-        f"**Итог:** "
-    )
-    if upvotes > downvotes:
-        result += f"Петиция №{номер} поддержана 🎉"
-    elif downvotes > upvotes:
-        result += f"Петиция №{номер} отклонена ❌"
-    else:
-        result += f"Петиция №{номер} получила равное количество голосов 🤝"
+    with open("petitions.json", "w", encoding="utf-8") as f:
+        json.dump(petitions, f, indent=4)
 
-    await ctx.send(result, reference=message)
+    class VoteButton(Button):
+        def __init__(self):
+            super().__init__(label="Подписать", style=nextcord.ButtonStyle.success)
+
+        async def callback(self, interaction: nextcord.Interaction):
+            if str(interaction.user.id) in petition_data["voters"]:
+                await interaction.response.send_message("Вы уже подписали эту петицию.", ephemeral=True)
+                return
+
+            petition_data["votes"] += 1
+            petition_data["voters"].append(str(interaction.user.id))
+
+            with open("petitions.json", "w", encoding="utf-8") as f:
+                json.dump(petitions, f, indent=4)
+
+            await interaction.response.edit_message(
+                content=f"**Петиция №{petition_id}**\n{text}\n\nПодписей: {petition_data['votes']}",
+                view=view
+            )
+
+            if petition_data["votes"] == 10:
+                await interaction.channel.send(
+                    f"✅ **Петиция №{petition_id} достигла необходимого количества голосов (10) и будет рассмотрена!**"
+                )
+
+    view = View()
+    view.add_item(VoteButton())
+
+    await ctx.send(f"**Петиция №{petition_id}**\n{text}\n\nПодписей: 0", view=view)
+
+
 
 
 
