@@ -19,6 +19,7 @@ import discord
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
+intents.members = True
 intents.message_content = True  # Включаем возможность читать контент сообщений
 
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -1853,6 +1854,7 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
+    print(f"[JOIN] {member.name} присоединился!")
     try:
         # Чтение файла help.txt
         try:
@@ -1862,7 +1864,7 @@ async def on_member_join(member):
             help_text = "Файл помощи не найден. Обратитесь к администратору."
 
         # Отправка приветствия + help в ЛС
-        await member.send(f"Привет, {member.name}! Добро пожаловать на сервер!\n\n{help_text}")
+        await member.send(f"Привет от бота BAZARCIK_PM, {member.name}! Добро пожаловать на сервер BAZARCIK_PM!\n\n{help_text}")
 
     except nextcord.Forbidden:
         print(f'Не удалось отправить ЛС пользователю {member.name}.')
