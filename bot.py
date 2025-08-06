@@ -1954,12 +1954,13 @@ def save_counter(count):
 petition_counter = load_counter()
 
 @bot.command()
-async def petition(ctx, *, text=None, interaction: nextcord.Interaction):
+async def petition(ctx, *, text=None):
     if text is None:
-        await interaction.response.send_message(
+        await ctx.send(
             "❗ Неверное использование команды!\n"
             "Правильно: `!petition <текст петиции>`\n"
             "Пример: `!petition Добавить новые смайлики в сервер`",
+            delete_after=15  # опционально удалить через 20 сек
         )
         return
 
