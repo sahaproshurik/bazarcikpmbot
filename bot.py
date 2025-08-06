@@ -1956,7 +1956,7 @@ def save_counter(count):
 # Загружаем при старте
 petition_counter = load_counter()
 
-@bot.slash_command(name="petition", description="Создать петицию")
+@bot.command(name="petition", description="Создать петицию")
 async def petition(
     interaction: Interaction,
     часы: float = SlashOption(
