@@ -1968,7 +1968,8 @@ async def petition(ctx, *, text):
         "author": ctx.author.id,
         "text": text,
         "votes": 0,
-        "voters": []
+        "voters": [],
+        "status": "active"  # новый статус
     }
 
     petitions.append(petition_data)
@@ -1981,6 +1982,10 @@ async def petition(ctx, *, text):
             super().__init__(label="Подписать", style=nextcord.ButtonStyle.success)
 
         async def callback(self, interaction: nextcord.Interaction):
+            if petition_data["status"] != "active":
+                await interaction.response.send_message("Эта петиция уже была рассмотрена.", ephemeral=True)
+                return
+
             if str(interaction.user.id) in petition_data["voters"]:
                 await interaction.response.send_message("Вы уже подписали эту петицию.", ephemeral=True)
                 return
@@ -1991,22 +1996,82 @@ async def petition(ctx, *, text):
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            await interaction.response.edit_message(
-                content=f"**Петиция №{petition_id}**\n{text}\n\nПодписей: {petition_data['votes']}",
-                view=view
+            content = (
+                f"**Петиция №{petition_id}**\n"
+                f"{text}\n\n"
+                f"Автор: <@{ctx.author.id}>\n"
+                f"Подписей: {petition_data['votes']}"
             )
 
-            if petition_data["votes"] == 10:
-                await interaction.channel.send(
-                    f"✅ **Петиция №{petition_id} достигла необходимого количества голосов (10) и будет рассмотрена Правительством Базарчика ПМ.**"
-                )
+            if petition_data["votes"] >= 10:
+                content += "\n\n🔔 Петиция достигла необходимого количества голосов для рассмотрения."
+
+            await interaction.response.edit_message(content=content, view=view)
 
     view = View()
     view.add_item(VoteButton())
 
-    await ctx.send(f"**Петиция №{petition_id}**\n{text}\n\nПодписей: 0", view=view)
+    await ctx.send(
+        f"**Петиция №{petition_id}**\n{text}\n\nАвтор: <@{ctx.author.id}>\nПодписей: 0",
+        view=view
+    )
+
+@bot.command()
+async def yes(ctx, petition_id: int):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Только администратор может использовать эту команду.")
+        return
+
+    try:
+        with open("petitions.json", "r", encoding="utf-8") as f:
+            petitions = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        await ctx.send("Нет активных петиций.")
+        return
+
+    for petition in petitions:
+        if petition["id"] == petition_id:
+            if petition["status"] != "active":
+                await ctx.send("Эта петиция уже была рассмотрена.")
+                return
+
+            petition["status"] = "approved"
+            with open("petitions.json", "w", encoding="utf-8") as f:
+                json.dump(petitions, f, indent=4)
+
+            await ctx.send(f"✅ Петиция №{petition_id} одобрена.")
+            return
+
+    await ctx.send("Петиция не найдена.")
 
 
+@bot.command()
+async def no(ctx, petition_id: int):
+    if not ctx.author.guild_permissions.administrator:
+        await ctx.send("Только администратор может использовать эту команду.")
+        return
+
+    try:
+        with open("petitions.json", "r", encoding="utf-8") as f:
+            petitions = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        await ctx.send("Нет активных петиций.")
+        return
+
+    for petition in petitions:
+        if petition["id"] == petition_id:
+            if petition["status"] != "active":
+                await ctx.send("Эта петиция уже была рассмотрена.")
+                return
+
+            petition["status"] = "rejected"
+            with open("petitions.json", "w", encoding="utf-8") as f:
+                json.dump(petitions, f, indent=4)
+
+            await ctx.send(f"❌ Петиция №{petition_id} отклонена.")
+            return
+
+    await ctx.send("Петиция не найдена.")
 
 
 
