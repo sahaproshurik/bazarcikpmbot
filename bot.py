@@ -1872,35 +1872,44 @@ async def on_member_join(member):
         print(f'Не удалось отправить ЛС пользователю {member.name}.')
 
 
+# channel: category
 AUTO_CHANNELS = {
     1402746822191218749: 1402733375986466816,
     1402746847713296526: 1402732822375960676,
-    1402746870773584062: 1402732572206960661
+    1402746870773584062: 1402732572206960661,
+    1314708636269936670: 1402748456883454097
 }
 
 @bot.event
 async def on_voice_state_update(member, before, after):
     if after.channel and after.channel.id in AUTO_CHANNELS:
         guild = member.guild
-        category_id = AUTO_CHANNELS[after.channel.id]
+        auto_channel = after.channel
+        category_id = AUTO_CHANNELS[auto_channel.id]
         category = guild.get_channel(category_id)
 
-        # Ищем только в этой категории
+        # Определяем базовое имя в зависимости от названия автоканала
+        if auto_channel.name == "🔊Poslucháreň":
+            prefix = "_ZP"
+        elif auto_channel.name == "🎮Hračka":
+            prefix = " "
+
+        # Поиск существующих номеров
         existing_numbers = []
         for channel in category.voice_channels:
-            if channel.name.startswith("🔊Poslucháreň_ZP"):
+            if channel.name.startswith(prefix):
                 try:
-                    number = int(channel.name.replace("🔊Poslucháreň_ZP", "").split()[0])
+                    number = int(channel.name.replace(prefix, "").strip())
                     existing_numbers.append(number)
                 except ValueError:
                     continue
 
-        # Поиск первого свободного номера
+        # Поиск свободного номера
         new_number = 1
         while new_number in existing_numbers:
             new_number += 1
 
-        new_channel_name = f"🔊Poslucháreň_ZP{new_number}"
+        new_channel_name = f"{prefix}{new_number}"
 
         # Права доступа
         overwrites = {
@@ -1908,17 +1917,17 @@ async def on_voice_state_update(member, before, after):
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
-        # Создание канала
+        # Создаём новый голосовой канал
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
 
-        # Перемещение пользователя
+        # Перемещаем пользователя
         await member.move_to(new_channel)
 
-        # Удаление канала, если опустеет
+        # Удаление, если пустой
         async def check_empty():
             await asyncio.sleep(5)
             if len(new_channel.members) == 0:
