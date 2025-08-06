@@ -1956,49 +1956,51 @@ def save_counter(count):
 # Загружаем при старте
 petition_counter = load_counter()
 
-@bot.command(name="petition", description="Создать петицию")
-async def petition(
-    interaction: Interaction,
-    часы: float = SlashOption(
-        name="часы",
-        description="Длительность петиции в часах (мин. 1)",
-        required=True,
-        min_value=1.0
-    ),
-    текст: str = SlashOption(
-        name="текст",
-        description="Текст петиции",
-        required=True
-    )
-):
+@bot.command(name="petition")
+async def petition(ctx, часы: float = None, *, текст: str = None):
     global petition_counter
 
+    if часы is None or текст is None:
+        await ctx.send(
+            "❗ Правильное использование: `!petition <часы> <текст>`\n"
+            "Пример: `!petition 2 Поднять зарплату всем!`",
+            ephemeral=True if isinstance(ctx, nextcord.ApplicationContext) else False
+        )
+        return
+
     if часы < 1:
-        await interaction.response.send_message("❌ Минимальное время петиции — **1 час**.", ephemeral=True)
+        await ctx.send("❌ Минимальное время петиции — **1 час**.", ephemeral=True if isinstance(ctx, nextcord.ApplicationContext) else False)
         return
 
     petition_counter += 1
-    save_counter(petition_counter)  # сохраняем в файл
-
+    save_counter(petition_counter)
     номер = petition_counter
-    секунды = int(часы)
+
+    секунды = int(часы * 3600)
 
     embed = nextcord.Embed(
         title=f"📝 Петиция №{номер}",
         description=текст,
         color=nextcord.Color.blue()
     )
-    embed.set_footer(text=f"Создал: {interaction.user.display_name} | Голосование длится {часы} ч.")
-    message = await interaction.channel.send(embed=embed)
+    embed.set_footer(text=f"Создал: {ctx.author.display_name} | Голосование длится {часы} ч.")
+    message = await ctx.send(embed=embed)
 
     await message.add_reaction("👍")
     await message.add_reaction("👎")
 
-    await interaction.response.send_message(f"Петиция №{номер} создана и будет длиться {часы} часа(ов).", ephemeral=True)
+    try:
+        await ctx.author.send(f"Петиция №{номер} создана и будет длиться {часы} ч.")
+    except:
+        pass
 
     await asyncio.sleep(секунды)
 
-    message = await interaction.channel.fetch_message(message.id)
+    try:
+        message = await ctx.channel.fetch_message(message.id)
+    except:
+        return  # сообщение удалено
+
     upvotes = 0
     downvotes = 0
     for reaction in message.reactions:
@@ -2019,7 +2021,7 @@ async def petition(
     else:
         result += f"Петиция №{номер} получила равное количество голосов 🤝"
 
-    await interaction.channel.send(result, reference=message)
+    await ctx.send(result, reference=message)
 
 
 
