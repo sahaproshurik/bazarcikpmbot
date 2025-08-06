@@ -1935,6 +1935,61 @@ async def on_voice_state_update(member, before, after):
 
         asyncio.create_task(check_empty())
 
+@bot.command(name="petition")
+async def create_petition(ctx, часы: str = None, *, текст: str = None):
+    пример = "!petition <часы> <текст>\nПример: `!petition 2 Добавить больше каналов`"
+
+    # Проверка наличия аргументов
+    if часы is None or текст is None:
+        await ctx.send(f"❌ Неправильное использование команды.\nПравильный формат:\n{пример}")
+        return
+
+    # Проверка формата числа
+    try:
+        часы = float(часы)
+    except ValueError:
+        await ctx.send(f"❌ Время должно быть числом (например, `1`, `2.5`).\n{пример}")
+        return
+
+    # Минимум 1 час
+    if часы < 1:
+        await ctx.send("❌ Минимальное время петиции — **1 час**.")
+        return
+
+    секунды = int(часы * 3600)
+
+    embed = nextcord.Embed(
+        title="📝 Петиция",
+        description=текст,
+        color=nextcord.Color.blue()
+    )
+    embed.set_footer(text=f"Создал: {ctx.author.display_name} | Голосование длится {часы} ч.")
+    message = await ctx.send(embed=embed)
+
+    await message.add_reaction("👍")
+    await message.add_reaction("👎")
+
+    await asyncio.sleep(секунды)
+
+    message = await ctx.channel.fetch_message(message.id)
+    upvotes = 0
+    downvotes = 0
+    for reaction in message.reactions:
+        if str(reaction.emoji) == "👍":
+            upvotes = reaction.count - 1
+        elif str(reaction.emoji) == "👎":
+            downvotes = reaction.count - 1
+
+    result = f"✅ За: {upvotes}\n❌ Против: {downvotes}\n\n**Итог:** "
+    if upvotes > downvotes:
+        result += "Петиция поддержана 🎉"
+    elif downvotes > upvotes:
+        result += "Петиция отклонена ❌"
+    else:
+        result += "Равное количество голосов 🤝"
+
+    await ctx.send(result)
+
 
 
 # Устанавливаем кастомную команду help
