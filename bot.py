@@ -3,7 +3,10 @@ import pytz
 from discord.ext import commands, tasks
 import random
 from nextcord.ext import commands
-from nextcord.ui import View, Button  # Добавляем импорт View и Button
+from nextcord.ui import View, Button
+from nextcord import Interaction, SlashOption
+from nextcord.ext import commands
+# Добавляем импорт View и Button
 import asyncio
 from collections import Counter
 import json
@@ -1935,44 +1938,67 @@ async def on_voice_state_update(member, before, after):
 
         asyncio.create_task(check_empty())
 
-@bot.command(name="petition")
-async def create_petition(ctx, часы: str = None, *, текст: str = None):
-    await ctx.message.delete()
-    пример = "!petition <часы> <текст>\nПример: `!petition 2 Добавить больше каналов`"
+COUNTER_FILE = "petition_counter.json"
 
-    # Проверка наличия аргументов
-    if часы is None or текст is None:
-        await ctx.send(f"❌ Неправильное использование команды.\nПравильный формат:\n{пример}")
-        return
+# Функция загрузки счётчика из файла
+def load_counter():
+    if os.path.exists(COUNTER_FILE):
+        with open(COUNTER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("count", 0)
+    return 0
 
-    # Проверка формата числа
-    try:
-        часы = float(часы)
-    except ValueError:
-        await ctx.send(f"❌ Время должно быть числом (например, `1`, `2.5`).\n{пример}")
-        return
+# Функция сохранения счётчика в файл
+def save_counter(count):
+    with open(COUNTER_FILE, "w", encoding="utf-8") as f:
+        json.dump({"count": count}, f)
 
-    # Минимум 1 час
+# Загружаем при старте
+petition_counter = load_counter()
+
+@bot.slash_command(name="petition", description="Создать петицию")
+async def petition(
+    interaction: Interaction,
+    часы: float = SlashOption(
+        name="часы",
+        description="Длительность петиции в часах (мин. 1)",
+        required=True,
+        min_value=1.0
+    ),
+    текст: str = SlashOption(
+        name="текст",
+        description="Текст петиции",
+        required=True
+    )
+):
+    global petition_counter
+
     if часы < 1:
-        await ctx.send("❌ Минимальное время петиции — **1 час**.")
+        await interaction.response.send_message("❌ Минимальное время петиции — **1 час**.", ephemeral=True)
         return
 
-    секунды = int(часы * 3600)
+    petition_counter += 1
+    save_counter(petition_counter)  # сохраняем в файл
+
+    номер = petition_counter
+    секунды = int(часы)
 
     embed = nextcord.Embed(
-        title="📝 Петиция",
+        title=f"📝 Петиция №{номер}",
         description=текст,
         color=nextcord.Color.blue()
     )
-    embed.set_footer(text=f"Создал: {ctx.author.display_name} | Голосование длится {часы} ч.")
-    message = await ctx.send(embed=embed)
+    embed.set_footer(text=f"Создал: {interaction.user.display_name} | Голосование длится {часы} ч.")
+    message = await interaction.channel.send(embed=embed)
 
     await message.add_reaction("👍")
     await message.add_reaction("👎")
 
+    await interaction.response.send_message(f"Петиция №{номер} создана и будет длиться {часы} часа(ов).", ephemeral=True)
+
     await asyncio.sleep(секунды)
 
-    message = await ctx.channel.fetch_message(message.id)
+    message = await interaction.channel.fetch_message(message.id)
     upvotes = 0
     downvotes = 0
     for reaction in message.reactions:
@@ -1981,15 +2007,19 @@ async def create_petition(ctx, часы: str = None, *, текст: str = None):
         elif str(reaction.emoji) == "👎":
             downvotes = reaction.count - 1
 
-    result = f"✅ За: {upvotes}\n❌ Против: {downvotes}\n\n**Итог:** "
+    result = (
+        f"✅ За: {upvotes}\n"
+        f"❌ Против: {downvotes}\n\n"
+        f"**Итог:** "
+    )
     if upvotes > downvotes:
-        result += "Петиция поддержана 🎉"
+        result += f"Петиция №{номер} поддержана 🎉"
     elif downvotes > upvotes:
-        result += "Петиция отклонена ❌"
+        result += f"Петиция №{номер} отклонена ❌"
     else:
-        result += "Равное количество голосов 🤝"
+        result += f"Петиция №{номер} получила равное количество голосов 🤝"
 
-    await ctx.send(result)
+    await interaction.channel.send(result, reference=message)
 
 
 
