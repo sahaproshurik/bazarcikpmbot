@@ -1972,6 +1972,7 @@ async def petition(ctx, *, text=None):
         petitions = []
 
     petition_id = len(petitions) + 1
+    required_votes = max(1, int(ctx.guild.member_count * 0.1))  # 10%
 
     petition_data = {
         "id": petition_id,
@@ -1980,7 +1981,9 @@ async def petition(ctx, *, text=None):
         "votes": 0,
         "voters": [],
         "status": "active",
-        "reviewed_by": None
+        "reviewed_by": None,
+        "message_id": None,
+        "required_votes": required_votes
     }
 
     petitions.append(petition_data)
@@ -1989,17 +1992,15 @@ async def petition(ctx, *, text=None):
         json.dump(petitions, f, indent=4)
 
     class VoteButton(Button):
-        def __init__(self, petition_data, petitions, petition_id, text):
+        def __init__(self, petition_data, petitions):
             super().__init__(label="Подписать", style=nextcord.ButtonStyle.success)
             self.petition_data = petition_data
             self.petitions = petitions
-            self.petition_id = petition_id
-            self.text = text
 
         async def callback(self, interaction: nextcord.Interaction):
             if self.petition_data["status"] != "active":
                 await interaction.response.send_message(
-                    "Эта петиция уже была рассмотрена и подписать её нельзя.", ephemeral=True
+                    "Эта петиция уже закрыта и подписать её нельзя.", ephemeral=True
                 )
                 return
 
@@ -2014,28 +2015,28 @@ async def petition(ctx, *, text=None):
                 json.dump(self.petitions, f, indent=4)
 
             content = (
-                f"**Петиция №{self.petition_id}**\n"
-                f"{self.text}\n\n"
+                f"**Петиция №{self.petition_data['id']}**\n"
+                f"{self.petition_data['text']}\n\n"
                 f"Автор: <@{self.petition_data['author']}>\n"
-                f"Подписей: {self.petition_data['votes']}"
+                f"Подписей: {self.petition_data['votes']}/{self.petition_data['required_votes']}"
             )
 
-            # 5% от общего количества участников сервера
-            guild = interaction.guild
-            required_votes = max(1, int(guild.member_count * 0.1))
-
-            if self.petition_data["votes"] >= required_votes:
-                content += f"\n\n🔔 Петиция достигла необходимого количества голосов ({required_votes}) для рассмотрения."
+            if self.petition_data["votes"] >= self.petition_data["required_votes"]:
+                content += "\n\n🔔 Петиция достигла необходимого количества голосов и может быть рассмотрена."
 
             await interaction.response.edit_message(content=content, view=self.view)
 
     view = View()
-    view.add_item(VoteButton(petition_data, petitions, petition_id, text))
+    view.add_item(VoteButton(petition_data, petitions))
 
-    await ctx.send(
-        f"**Петиция №{petition_id}**\n{text}\n\nАвтор: <@{ctx.author.id}>\nПодписей: 0",
+    sent_message = await ctx.send(
+        f"**Петиция №{petition_id}**\n{text}\n\nАвтор: <@{ctx.author.id}>\nПодписей: 0/{required_votes}",
         view=view
     )
+
+    petition_data["message_id"] = sent_message.id
+    with open("petitions.json", "w", encoding="utf-8") as f:
+        json.dump(petitions, f, indent=4)
 
 
 @bot.command()
@@ -2054,34 +2055,36 @@ async def yes(ctx, petition_id: int):
 
     for petition in petitions:
         if petition["id"] == petition_id:
-            # Проверка: если петиция уже рассмотрена
             if petition["status"] != "active":
                 reviewer = petition.get("reviewed_by")
                 reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
+                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
+                return
+
+            if petition["votes"] < petition["required_votes"]:
                 await ctx.send(
-                    f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.",
+                    f"Петиция ещё не набрала необходимое количество голосов.\n"
+                    f"Текущие голоса: {petition['votes']}/{petition['required_votes']}",
                     delete_after=15
                 )
                 return
 
-            # Проверка на минимальное количество голосов (10% от участников)
-            required_votes = max(1, int(ctx.guild.member_count * 0.1))
-            if petition["votes"] < required_votes:
-                await ctx.send(
-                    f"Петиция ещё не набрала необходимое количество голосов для рассмотрения.\n"
-                    f"Текущие голоса: {petition['votes']}/{required_votes}",
-                    delete_after=15
-                )
-                return
-
-            # Одобряем
             petition["status"] = "approved"
             petition["reviewed_by"] = ctx.author.id
 
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            await ctx.send(f"✅ Петиция №{petition_id} одобрена администратором {ctx.author.mention}.")
+            # обновляем сообщение петиции
+            msg = await ctx.fetch_message(petition["message_id"])
+            new_content = (
+                f"**Петиция №{petition['id']}**\n"
+                f"{petition['text']}\n\n"
+                f"Автор: <@{petition['author']}>\n"
+                f"Подписей: {petition['votes']}/{petition['required_votes']}\n\n"
+                f"✅ Одобрена администратором {ctx.author.mention}"
+            )
+            await msg.edit(content=new_content, view=None)
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
@@ -2103,37 +2106,41 @@ async def no(ctx, petition_id: int):
 
     for petition in petitions:
         if petition["id"] == petition_id:
-            # Проверка: если петиция уже рассмотрена
             if petition["status"] != "active":
                 reviewer = petition.get("reviewed_by")
                 reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
+                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
+                return
+
+            if petition["votes"] < petition["required_votes"]:
                 await ctx.send(
-                    f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.",
+                    f"Петиция ещё не набрала необходимое количество голосов.\n"
+                    f"Текущие голоса: {petition['votes']}/{petition['required_votes']}",
                     delete_after=15
                 )
                 return
 
-            # Проверка на минимальное количество голосов (10% от участников)
-            required_votes = max(1, int(ctx.guild.member_count * 0.1))
-            if petition["votes"] < required_votes:
-                await ctx.send(
-                    f"Петиция ещё не набрала необходимое количество голосов для рассмотрения.\n"
-                    f"Текущие голоса: {petition['votes']}/{required_votes}",
-                    delete_after=15
-                )
-                return
-
-            # Отклоняем
             petition["status"] = "rejected"
             petition["reviewed_by"] = ctx.author.id
 
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            await ctx.send(f"❌ Петиция №{petition_id} отклонена администратором {ctx.author.mention}.")
+            # обновляем сообщение петиции
+            msg = await ctx.fetch_message(petition["message_id"])
+            new_content = (
+                f"**Петиция №{petition['id']}**\n"
+                f"{petition['text']}\n\n"
+                f"Автор: <@{petition['author']}>\n"
+                f"Подписей: {petition['votes']}/{petition['required_votes']}\n\n"
+                f"❌ Отклонена администратором {ctx.author.mention}"
+            )
+            await msg.edit(content=new_content, view=None)
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
+
+
 
 
 
