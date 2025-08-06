@@ -1854,9 +1854,19 @@ async def on_ready():
 @bot.event
 async def on_member_join(member):
     try:
-        await member.send(f'Привет, {member.name}! Добро пожаловать на сервер!')
+        # Чтение файла help.txt
+        try:
+            with open("help.txt", "r", encoding="utf-8") as file:
+                help_text = file.read()
+        except FileNotFoundError:
+            help_text = "Файл помощи не найден. Обратитесь к администратору."
+
+        # Отправка приветствия + help в ЛС
+        await member.send(f"Привет, {member.name}! Добро пожаловать на сервер!\n\n{help_text}")
+
     except nextcord.Forbidden:
         print(f'Не удалось отправить ЛС пользователю {member.name}.')
+
 
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
