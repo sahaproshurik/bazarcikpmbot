@@ -1740,41 +1740,41 @@ tax_channel_id = 1351953330791776421   # Укажите свой канал ID
 
 
 # Функция для списания налога
-async def apply_daily_tax():
-    # Получаем канал, в который будем отправлять сообщения
-    tax_channel = bot.get_channel(tax_channel_id)
+# async def apply_daily_tax():
+#     # Получаем канал, в который будем отправлять сообщения
+#     tax_channel = bot.get_channel(tax_channel_id)
+#
+#     if not tax_channel:
+#         print("Канал для налога не найден.")
+#         return
+#
+#     # Проходим по всем пользователям и списываем налог
+#     for user_id, balance in player_funds.items():
+#         # Если у пользователя меньше 37981 денег, налог 19%
+#         if balance < 37981:
+#             tax = int(balance * 0.19)
+#         else:
+#             # Если больше или равно 37981, налог 25%
+#             tax = int(balance * 0.25)
+#
+#         # Списываем налог с баланса
+#         player_funds[user_id] -= tax
+#         save_funds()  # Сохраняем изменения
+#     #
+#     #     # Получаем пользователя по ID
+#     #     user = await bot.fetch_user(user_id)
+#     #
+#     #     # Отправляем сообщение о списании налога в общий канал
+#     #     await tax_channel.send(
+#     #         f"{user.mention}, с вашего баланса был списан налог в размере {tax} денег. Ваш новый баланс: {player_funds[user_id]}.")
+#     #
+#     # print("Налоги были успешно списаны.")
 
-    if not tax_channel:
-        print("Канал для налога не найден.")
-        return
 
-    # Проходим по всем пользователям и списываем налог
-    for user_id, balance in player_funds.items():
-        # Если у пользователя меньше 37981 денег, налог 19%
-        if balance < 37981:
-            tax = int(balance * 0.19)
-        else:
-            # Если больше или равно 37981, налог 25%
-            tax = int(balance * 0.25)
-
-        # Списываем налог с баланса
-        player_funds[user_id] -= tax
-        save_funds()  # Сохраняем изменения
-
-        # Получаем пользователя по ID
-        user = await bot.fetch_user(user_id)
-
-        # Отправляем сообщение о списании налога в общий канал
-        await tax_channel.send(
-            f"{user.mention}, с вашего баланса был списан налог в размере {tax} денег. Ваш новый баланс: {player_funds[user_id]}.")
-
-    print("Налоги были успешно списаны.")
-
-
-# Планируем задачу, которая будет запускаться каждый день в 20:00
-scheduler = AsyncIOScheduler()
-scheduler.add_job(apply_daily_tax,
-                  CronTrigger(hour=20, minute=0))  # Используем CronTrigger для ежедневного запуска в 20:00
+# # Планируем задачу, которая будет запускаться каждый день в 20:00
+# scheduler = AsyncIOScheduler()
+# scheduler.add_job(apply_daily_tax,
+#                   CronTrigger(hour=20, minute=0))  # Используем CronTrigger для ежедневного запуска в 20:00
 
 # Убедитесь, что бот использует asyncio
 loop = asyncio.get_event_loop()
@@ -1850,7 +1850,7 @@ async def on_ready():
     print(f'Logged in as {bot.user.name}')
     # Запуск задачи при запуске бота
     send_loan_warnings.start()
-    scheduler.start()
+    # scheduler.start()
 
 @bot.event
 async def on_member_join(member):
