@@ -1955,6 +1955,7 @@ petition_counter = load_counter()
 
 @bot.command()
 async def petition(ctx, *, text=None):
+    await ctx.message.delete()
     if text is None:
         await ctx.send(
             "❗ Неверное использование команды!\n"
