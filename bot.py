@@ -1872,50 +1872,53 @@ async def on_member_join(member):
         print(f'Не удалось отправить ЛС пользователю {member.name}.')
 
 
-
-AUTO_VOICE_CHANNEL_ID = 1310705688296820899  # замените на свой
-# ID категории, куда создавать каналы
-CATEGORY_ID = 1310705688296820897  # замените на нужную категорию
+AUTO_CHANNELS = {
+    1402746822191218749: 1402733375986466816,
+    1402746847713296526: 1402732822375960676,
+    1402746870773584062: 1402732572206960661
+}
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if after.channel and after.channel.id == AUTO_VOICE_CHANNEL_ID:
+    if after.channel and after.channel.id in AUTO_CHANNELS:
         guild = member.guild
-        category = guild.get_channel(CATEGORY_ID)
+        category_id = AUTO_CHANNELS[after.channel.id]
+        category = guild.get_channel(category_id)
 
-        # Собираем номера уже существующих комнат
+        # Ищем только в этой категории
         existing_numbers = []
         for channel in category.voice_channels:
             if channel.name.startswith("🔊Poslucháreň_ZP"):
                 try:
-                    number = int(channel.name.replace("🔊Poslucháreň_ZP", ""))
+                    number = int(channel.name.replace("🔊Poslucháreň_ZP", "").split()[0])
                     existing_numbers.append(number)
                 except ValueError:
                     continue
 
-        # Ищем минимально свободный номер
+        # Поиск первого свободного номера
         new_number = 1
         while new_number in existing_numbers:
             new_number += 1
 
         new_channel_name = f"🔊Poslucháreň_ZP{new_number}"
 
-        # Создаем канал с нужными правами
+        # Права доступа
         overwrites = {
             guild.default_role: nextcord.PermissionOverwrite(connect=False),
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
+        # Создание канала
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
 
-        # Перемещаем пользователя
+        # Перемещение пользователя
         await member.move_to(new_channel)
 
-        # Удаляем комнату, если она пустая (через 5 секунд)
+        # Удаление канала, если опустеет
         async def check_empty():
             await asyncio.sleep(5)
             if len(new_channel.members) == 0:
