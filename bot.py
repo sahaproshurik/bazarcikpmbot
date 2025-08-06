@@ -1998,7 +1998,7 @@ async def petition(ctx, *, text):
 
             if petition_data["votes"] == 10:
                 await interaction.channel.send(
-                    f"✅ **Петиция №{petition_id} достигла необходимого количества голосов (10) и будет рассмотрена!**"
+                    f"✅ **Петиция №{petition_id} достигла необходимого количества голосов (10) и будет рассмотрена Правительством Базарчика ПМ.**"
                 )
 
     view = View()
