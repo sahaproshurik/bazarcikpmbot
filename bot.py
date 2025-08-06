@@ -1891,7 +1891,7 @@ async def on_voice_state_update(member, before, after):
         # Определяем базовое имя в зависимости от названия автоканала
         if auto_channel.name == "🔊Poslucháreň":
             prefix = "_ZP"
-        elif auto_channel.name == "🎮Hračka":
+        else:
             prefix = " "
 
         # Поиск существующих номеров
