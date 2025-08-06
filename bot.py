@@ -2054,14 +2054,18 @@ async def yes(ctx, petition_id: int):
 
     for petition in petitions:
         if petition["id"] == petition_id:
+            # Проверка: если петиция уже рассмотрена
             if petition["status"] != "active":
                 reviewer = petition.get("reviewed_by")
                 reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
-                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
+                await ctx.send(
+                    f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.",
+                    delete_after=15
+                )
                 return
 
-            # Проверка на минимальное количество голосов (5% от участников)
-            required_votes = max(1, int(ctx.guild.member_count * 0.05))
+            # Проверка на минимальное количество голосов (10% от участников)
+            required_votes = max(1, int(ctx.guild.member_count * 0.1))
             if petition["votes"] < required_votes:
                 await ctx.send(
                     f"Петиция ещё не набрала необходимое количество голосов для рассмотрения.\n"
@@ -2070,6 +2074,7 @@ async def yes(ctx, petition_id: int):
                 )
                 return
 
+            # Одобряем
             petition["status"] = "approved"
             petition["reviewed_by"] = ctx.author.id
 
@@ -2098,14 +2103,18 @@ async def no(ctx, petition_id: int):
 
     for petition in petitions:
         if petition["id"] == petition_id:
+            # Проверка: если петиция уже рассмотрена
             if petition["status"] != "active":
                 reviewer = petition.get("reviewed_by")
                 reviewer_mention = f"<@{reviewer}>" if reviewer else "неизвестно"
-                await ctx.send(f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.", delete_after=15)
+                await ctx.send(
+                    f"Эта петиция уже была рассмотрена администратором {reviewer_mention}.",
+                    delete_after=15
+                )
                 return
 
-            # Проверка на минимальное количество голосов (5% от участников)
-            required_votes = max(1, int(ctx.guild.member_count * 0.05))
+            # Проверка на минимальное количество голосов (10% от участников)
+            required_votes = max(1, int(ctx.guild.member_count * 0.1))
             if petition["votes"] < required_votes:
                 await ctx.send(
                     f"Петиция ещё не набрала необходимое количество голосов для рассмотрения.\n"
@@ -2114,6 +2123,7 @@ async def no(ctx, petition_id: int):
                 )
                 return
 
+            # Отклоняем
             petition["status"] = "rejected"
             petition["reviewed_by"] = ctx.author.id
 
@@ -2124,6 +2134,7 @@ async def no(ctx, petition_id: int):
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
+
 
 
 
