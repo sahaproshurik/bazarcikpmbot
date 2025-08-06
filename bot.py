@@ -1824,18 +1824,24 @@ class MyHelpCommand(commands.HelpCommand):
         except FileNotFoundError:
             help_text = "Файл помощи не найден. Обратитесь к администратору."
 
-        user = self.context.author  # получаем автора команды
+        ctx = self.context
+        user = ctx.author  # получаем пользователя, вызвавшего команду
 
+        # Удаляем сообщение с командой !help
         try:
-            await user.message.delete()
+            await ctx.message.delete()
         except nextcord.Forbidden:
             print("Нет прав на удаление сообщения.")
+        except AttributeError:
+            print("Сообщение не найдено (возможно, вызвано не через обычный текст).")
 
+        # Отправляем помощь в ЛС
         try:
-            await user.send(help_text)  # отправка в ЛС
+            await user.send(help_text)
         except nextcord.Forbidden:
-            await self.context.send(
+            await ctx.send(
                 f"{user.mention}, я не могу отправить тебе сообщение в ЛС. Разреши их в настройках приватности.")
+
 
 
 @bot.event
