@@ -21,6 +21,8 @@ import discord
 intents = nextcord.Intents.default()
 intents.members = True
 intents.message_content = True  # Включаем возможность читать контент сообщений
+intents.voice_states = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -1868,6 +1870,45 @@ async def on_member_join(member):
 
     except nextcord.Forbidden:
         print(f'Не удалось отправить ЛС пользователю {member.name}.')
+
+
+
+AUTO_VOICE_CHANNEL_ID = 1310705688296820899  # замените на свой
+# ID категории, куда создавать каналы
+CATEGORY_ID = 1310705688296820897  # замените на нужную категорию
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Заход на канал
+    if after.channel and after.channel.id == AUTO_VOICE_CHANNEL_ID:
+        guild = member.guild
+        category = guild.get_channel(CATEGORY_ID)
+
+        # Создание нового голосового канала
+        overwrites = {
+            guild.default_role: nextcord.PermissionOverwrite(connect=False),
+            member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
+        }
+
+        new_channel = await guild.create_voice_channel(
+            name=f"Комната {member.display_name}",
+            overwrites=overwrites,
+            category=category
+        )
+
+        # Переместить пользователя в новый канал
+        await member.move_to(new_channel)
+
+        # Опционально: удалить канал, когда все выйдут
+        async def check_empty():
+            await bot.wait_until_ready()
+            while True:
+                await nextcord.utils.sleep_until(nextcord.utils.utcnow() + nextcord.utils.timedelta(seconds=5))
+                if len(new_channel.members) == 0:
+                    await new_channel.delete()
+                    break
+
+        bot.loop.create_task(check_empty())
 
 
 # Устанавливаем кастомную команду help
