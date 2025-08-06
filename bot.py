@@ -1937,6 +1937,7 @@ async def on_voice_state_update(member, before, after):
 
 @bot.command(name="petition")
 async def create_petition(ctx, часы: str = None, *, текст: str = None):
+    await ctx.message.delete()
     пример = "!petition <часы> <текст>\nПример: `!petition 2 Добавить больше каналов`"
 
     # Проверка наличия аргументов
