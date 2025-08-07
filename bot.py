@@ -2060,7 +2060,7 @@ async def vote(ctx, petition_id: int = None):
     if petition["votes"] >= petition["required_votes"]:
         content += (
             "\n\n🔔 Петиция достигла необходимого количества голосов и ожидает решения от администраторов."
-            "\nАдминистраторы могут использовать команды: `!yes <номер>` или `!no <номер>`"
+            f"\nАдминистраторы могут использовать команды: `!yes {petition['id']}` или `!no {petition['id']}`"
         )
     else:
         content += f"\n📢 Подпиши петицию командой: `!vote {petition['id']}`"
@@ -2077,72 +2077,14 @@ async def vote(ctx, petition_id: int = None):
 
 @bot.command()
 async def yes(ctx, petition_id: int):
-    await ctx.message.delete()
-    if not ctx.author.guild_permissions.administrator:
-        await ctx.send("Только администратор может использовать эту команду.", delete_after=10)
-        return
-
-    try:
-        with open("petitions.json", "r", encoding="utf-8") as f:
-            petitions = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        await ctx.send("Нет активных петиций.", delete_after=10)
-        return
-
-    for petition in petitions:
-        if petition["id"] == petition_id:
-            if petition["status"] != "active":
-                await ctx.send("Эта петиция уже была рассмотрена.", delete_after=15)
-                return
-
-            if petition["votes"] < petition["required_votes"]:
-                await ctx.send(
-                    f"Петиция ещё не набрала необходимое количество голосов.\n"
-                    f"Текущие голоса: {petition['votes']}/{petition['required_votes']}",
-                    delete_after=15
-                )
-                return
-
-            # Инициализируем отзывы, если их ещё нет
-            if "reviews" not in petition:
-                petition["reviews"] = {"yes": [], "no": []}
-
-            if ctx.author.id in petition["reviews"]["yes"] or ctx.author.id in petition["reviews"]["no"]:
-                await ctx.send("Вы уже проголосовали за эту петицию.", delete_after=10)
-                return
-
-            petition["reviews"]["yes"].append(ctx.author.id)
-
-            total_votes = len(petition["reviews"]["yes"]) + len(petition["reviews"]["no"])
-            if total_votes >= 4:
-                if len(petition["reviews"]["yes"]) > len(petition["reviews"]["no"]):
-                    petition["status"] = "approved"
-                else:
-                    petition["status"] = "rejected"
-
-            with open("petitions.json", "w", encoding="utf-8") as f:
-                json.dump(petitions, f, indent=4)
-
-            if petition["status"] != "active":
-                msg = await ctx.fetch_message(petition["message_id"])
-                result_text = "✅ Одобрена" if petition["status"] == "approved" else "❌ Отклонена"
-                await msg.edit(content=
-                    f"**Петиция №{petition['id']}**\n"
-                    f"{petition['text']}\n\n"
-                    f"Автор: <@{petition['author']}>\n"
-                    f"Подписей: {petition['votes']}/{petition['required_votes']}\n\n"
-                    f"{result_text} большинством голосов администраторов", view=None)
-
-            else:
-                await ctx.send(f"Ваш голос засчитан. Сейчас проголосовало {total_votes}/4 админов.", delete_after=10)
-            return
-
-    await ctx.send("Петиция не найдена.", delete_after=10)
-
-
+    await handle_admin_vote(ctx, petition_id, vote_type="yes")
 
 @bot.command()
 async def no(ctx, petition_id: int):
+    await handle_admin_vote(ctx, petition_id, vote_type="no")
+
+
+async def handle_admin_vote(ctx, petition_id: int, vote_type: str):
     await ctx.message.delete()
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("Только администратор может использовать эту команду.", delete_after=10)
@@ -2176,33 +2118,56 @@ async def no(ctx, petition_id: int):
                 await ctx.send("Вы уже проголосовали за эту петицию.", delete_after=10)
                 return
 
-            petition["reviews"]["no"].append(ctx.author.id)
+            petition["reviews"][vote_type].append(ctx.author.id)
 
             total_votes = len(petition["reviews"]["yes"]) + len(petition["reviews"]["no"])
+            result_text = None
+
             if total_votes >= 4:
                 if len(petition["reviews"]["yes"]) > len(petition["reviews"]["no"]):
                     petition["status"] = "approved"
+                    result_text = "✅ Одобрена"
                 else:
                     petition["status"] = "rejected"
+                    result_text = "❌ Отклонена"
 
+            # Обновим файл
             with open("petitions.json", "w", encoding="utf-8") as f:
                 json.dump(petitions, f, indent=4)
 
-            if petition["status"] != "active":
-                msg = await ctx.fetch_message(petition["message_id"])
-                result_text = "✅ Одобрена" if petition["status"] == "approved" else "❌ Отклонена"
-                await msg.edit(content=
+            # Обновим сообщение с петицией
+            try:
+                channel = ctx.channel
+                message = await channel.fetch_message(petition["message_id"])
+
+                content = (
                     f"**Петиция №{petition['id']}**\n"
                     f"{petition['text']}\n\n"
                     f"Автор: <@{petition['author']}>\n"
-                    f"Подписей: {petition['votes']}/{petition['required_votes']}\n\n"
-                    f"{result_text} большинством голосов администраторов", view=None)
+                    f"Подписей: {petition['votes']}/{petition['required_votes']}"
+                )
 
-            else:
+                content += f"\n👮 Голоса админов: {total_votes}/4"
+
+                if petition["status"] == "active":
+                    content += (
+                        "\n\n🔔 Петиция достигла необходимого количества голосов и ожидает решения от администраторов."
+                        "\nАдминистраторы могут использовать команды: `!yes <номер>` или `!no <номер>`"
+                    )
+                else:
+                    content += f"\n\n{result_text} большинством голосов администраторов"
+
+                await message.edit(content=content)
+
+            except Exception as e:
+                print(f"[Ошибка обновления сообщения петиции #{petition_id}] {e}")
+
+            if petition["status"] == "active":
                 await ctx.send(f"Ваш голос засчитан. Сейчас проголосовало {total_votes}/4 админов.", delete_after=10)
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
+
 
 
 # Устанавливаем кастомную команду help
