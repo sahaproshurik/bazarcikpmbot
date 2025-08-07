@@ -2193,12 +2193,6 @@ async def no(ctx, petition_id: int):
     await ctx.send("Петиция не найдена.", delete_after=10)
 
 
-
-
-
-
-
-
 # Устанавливаем кастомную команду help
 bot.help_command = MyHelpCommand()
 load_dotenv()
