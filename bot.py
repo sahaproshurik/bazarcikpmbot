@@ -16,6 +16,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 import io
 import pytz
+import re
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
@@ -1873,12 +1874,6 @@ async def on_member_join(member):
 
 
 # channel: category
-AUTO_CHANNELS = {
-    1402746822191218749: 1402733375986466816,
-    1402746847713296526: 1402732822375960676,
-    1402746870773584062: 1402732572206960661,
-    1314708636269936670: 1402748456883454097
-}
 
 AUTO_CHANNELS = {
     1402746822191218749: 1402733375986466816,
@@ -1943,8 +1938,8 @@ async def on_voice_state_update(member, before, after):
         if before.channel.category_id not in AUTO_CHANNELS.values():
             return
 
-        name = before.channel.name
-        if not any(name.startswith(f"{base}_ZP") or name.startswith(f"{base} ") for base in ["🔊Poslucháreň", "ДругиеНазваниеЕслиЕсть"]):
+        # Универсальная проверка: имя заканчивается на цифру
+        if not re.search(r"\d+$", before.channel.name):
             return
 
         print(f"[CHECK] {member} покинул {before.channel.name}, проверка на пустоту через 5 секунд...")
