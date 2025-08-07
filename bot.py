@@ -1888,23 +1888,18 @@ async def on_voice_state_update(member, before, after):
         category_id = AUTO_CHANNELS[auto_channel.id]
         category = guild.get_channel(category_id)
 
-        # Определяем базовое имя в зависимости от названия автоканала
-        if auto_channel.name == "🔊Poslucháreň":
-            prefix = "_ZP"
-        else:
-            prefix = " "
+        # Префикс в зависимости от названия автоканала
+        prefix = "_ZP" if auto_channel.name == "🔊Poslucháreň" else " "
 
-        # Поиск существующих номеров
-        existing_numbers = []
+        # Сбор всех номеров в каналах этой категории
+        existing_numbers = set()
         for channel in category.voice_channels:
-            if channel.name.startswith(prefix):
-                try:
-                    number = int(channel.name.replace(prefix, "").strip())
-                    existing_numbers.append(number)
-                except ValueError:
-                    continue
+            if channel.name.startswith(auto_channel.name + prefix):
+                suffix = channel.name.replace(auto_channel.name + prefix, "").strip()
+                if suffix.isdigit():
+                    existing_numbers.add(int(suffix))
 
-        # Поиск свободного номера
+        # Поиск первой свободной цифры
         new_number = 1
         while new_number in existing_numbers:
             new_number += 1
@@ -1917,23 +1912,27 @@ async def on_voice_state_update(member, before, after):
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
-        # Создаём новый голосовой канал
+        # Создание канала
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
 
-        # Перемещаем пользователя
+        # Переместить пользователя
         await member.move_to(new_channel)
 
-        # Удаление, если пустой
+        # Удаление, если пуст
         async def check_empty():
-            await asyncio.sleep(5)
+            await asyncio.sleep(60)
             if len(new_channel.members) == 0:
-                await new_channel.delete()
+                try:
+                    await new_channel.delete()
+                except Exception as e:
+                    print(f"Ошибка удаления канала: {e}")
 
         asyncio.create_task(check_empty())
+
 
 COUNTER_FILE = "petition_counter.json"
 
