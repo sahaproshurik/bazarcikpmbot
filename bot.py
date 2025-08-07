@@ -25,7 +25,7 @@ intents.message_content = True  # Включаем возможность чит
 intents.voice_states = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 
 def load_jokes():
     with open('jokes.txt', 'r', encoding='utf-8') as file:
