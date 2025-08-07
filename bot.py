@@ -1891,7 +1891,7 @@ async def on_voice_state_update(member, before, after):
         category_id = AUTO_CHANNELS[auto_channel.id]
         category = guild.get_channel(category_id)
 
-        print(f"[INFO] {member} зашёл в автоканал {auto_channel.name}")
+        # print(f"[INFO] {member} зашёл в автоканал {auto_channel.name}")
 
         prefix = "_ZP" if auto_channel.name == "🔊Poslucháreň" else " "
 
@@ -1912,7 +1912,7 @@ async def on_voice_state_update(member, before, after):
 
         new_channel_name = f"{auto_channel.name}{prefix}{new_number}"
 
-        print(f"[CREATE] Создаётся канал: {new_channel_name}")
+        # print(f"[CREATE] Создаётся канал: {new_channel_name}")
 
         # Права
         overwrites = {
@@ -1928,7 +1928,7 @@ async def on_voice_state_update(member, before, after):
         )
 
         await member.move_to(new_channel)
-        print(f"[MOVE] {member} перемещён в {new_channel.name}")
+        # print(f"[MOVE] {member} перемещён в {new_channel.name}")
 
     # === УДАЛЕНИЕ ПУСТОГО КАНАЛА ===
     if before.channel:
@@ -1942,13 +1942,13 @@ async def on_voice_state_update(member, before, after):
         if not re.search(r"\d+$", before.channel.name):
             return
 
-        print(f"[CHECK] {member} покинул {before.channel.name}, проверка на пустоту через 5 секунд...")
+        # print(f"[CHECK] {member} покинул {before.channel.name}, проверка на пустоту через 5 секунд...")
         await asyncio.sleep(5)
 
         if len(before.channel.members) == 0:
             try:
                 await before.channel.delete()
-                print(f"[DELETE] Удалён пустой канал: {before.channel.name}")
+                # print(f"[DELETE] Удалён пустой канал: {before.channel.name}")
             except Exception as e:
                 print(f"[ERROR] Не удалось удалить канал {before.channel.name}: {e}")
 
