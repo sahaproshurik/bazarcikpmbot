@@ -1987,7 +1987,9 @@ async def petition(ctx, *, text=None):
         "status": "active",
         "reviewed_by": None,
         "message_id": None,
-        "required_votes": required_votes
+        "required_votes": required_votes,
+        "admin_votes": [],          # новые поля
+        "admin_results": {}         # id -> yes/no
     }
 
     petitions.append(petition_data)
@@ -1999,6 +2001,7 @@ async def petition(ctx, *, text=None):
         f"**Петиция №{petition_id}**\n{text}\n\n"
         f"Автор: <@{ctx.author.id}>\n"
         f"Подписей: 0/{required_votes}\n"
+        f"Голоса админов: 0/4\n\n"
         f"Подпиши петицию командой: `!vote {petition_id}`"
     )
 
@@ -2042,6 +2045,7 @@ async def vote(ctx, petition_id: int = None):
     with open("petitions.json", "w", encoding="utf-8") as f:
         json.dump(petitions, f, indent=4)
 
+    # Создание текста обновлённой петиции
     content = (
         f"**Петиция №{petition['id']}**\n"
         f"{petition['text']}\n\n"
@@ -2049,11 +2053,19 @@ async def vote(ctx, petition_id: int = None):
         f"Подписей: {petition['votes']}/{petition['required_votes']}"
     )
 
+    # Добавим поле для голосов админов
+    admin_votes = petition.get("admin_votes", {})
+    content += f"\n👮 Голоса админов: {len(admin_votes)}/4"
+
     if petition["votes"] >= petition["required_votes"]:
-        content += "\n\n🔔 Петиция достигла необходимого количества голосов и может быть рассмотрена."
+        content += (
+            "\n\n🔔 Петиция достигла необходимого количества голосов и ожидает решения от администраторов."
+            "\nАдминистраторы могут использовать команды: `!yes <номер>` или `!no <номер>`"
+        )
+    else:
+        content += f"\n📢 Подпиши петицию командой: `!vote {petition['id']}`"
 
     try:
-        # Обновим оригинальное сообщение с петицией, если оно всё ещё существует
         channel = ctx.channel
         message = await channel.fetch_message(petition["message_id"])
         await message.edit(content=content)
