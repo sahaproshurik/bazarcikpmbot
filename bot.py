@@ -1882,16 +1882,20 @@ AUTO_CHANNELS = {
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    # Игнорируем перемещения в пределах одного канала
+    if before.channel == after.channel:
+        return
+
+    # === Создание нового канала ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
         guild = member.guild
         auto_channel = after.channel
         category_id = AUTO_CHANNELS[auto_channel.id]
         category = guild.get_channel(category_id)
 
-        # Префикс в зависимости от названия автоканала
         prefix = "_ZP" if auto_channel.name == "🔊Poslucháreň" else " "
 
-        # Сбор всех номеров в каналах этой категории
+        # Сбор существующих номеров
         existing_numbers = set()
         for channel in category.voice_channels:
             if channel.name.startswith(auto_channel.name + prefix):
@@ -1899,58 +1903,39 @@ async def on_voice_state_update(member, before, after):
                 if suffix.isdigit():
                     existing_numbers.add(int(suffix))
 
-        # Поиск первой свободной цифры
+        # Поиск свободного номера
         new_number = 1
         while new_number in existing_numbers:
             new_number += 1
 
         new_channel_name = f"{auto_channel.name}{prefix}{new_number}"
 
-        # Права доступа
+        # Права
         overwrites = {
             guild.default_role: nextcord.PermissionOverwrite(connect=False),
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
-        # Создание канала
+        # Создание канала и перемещение
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
-
-        # Переместить пользователя
         await member.move_to(new_channel)
 
-        # Удаление, если пуст
-        async def check_empty():
-            await asyncio.sleep(60)
-            if len(new_channel.members) == 0:
+    # === Удаление пустого канала ===
+    # Проверяем, если пользователь покинул кастомный канал
+    if before.channel and before.channel.category_id in AUTO_CHANNELS.values():
+        category = before.channel.category
+        if before.channel.name.startswith("🔊Poslucháreň") or before.channel.name.startswith(" "):
+            # Проверяем, что канал больше не используется
+            await asyncio.sleep(5)
+            if len(before.channel.members) == 0:
                 try:
-                    await new_channel.delete()
+                    await before.channel.delete()
                 except Exception as e:
-                    print(f"Ошибка удаления канала: {e}")
-
-        asyncio.create_task(check_empty())
-
-
-COUNTER_FILE = "petition_counter.json"
-
-# Функция загрузки счётчика из файла
-def load_counter():
-    if os.path.exists(COUNTER_FILE):
-        with open(COUNTER_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("count", 0)
-    return 0
-
-# Функция сохранения счётчика в файл
-def save_counter(count):
-    with open(COUNTER_FILE, "w", encoding="utf-8") as f:
-        json.dump({"count": count}, f)
-
-# Загружаем при старте
-petition_counter = load_counter()
+                    print(f"Ошибка при удалении: {e}")
 
 @bot.command()
 async def petition(ctx, *, text=None):
