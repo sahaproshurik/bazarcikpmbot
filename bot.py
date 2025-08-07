@@ -1880,35 +1880,44 @@ AUTO_CHANNELS = {
     1314708636269936670: 1402748456883454097
 }
 
+AUTO_CHANNELS = {
+    1402746822191218749: 1402733375986466816,
+    1402746847713296526: 1402732822375960676,
+    1402746870773584062: 1402732572206960661,
+    1314708636269936670: 1402748456883454097
+}
+
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Игнорируем перемещения в пределах одного канала
-    if before.channel == after.channel:
-        return
-
-    # === Создание нового канала ===
+    # === СОЗДАНИЕ КАНАЛА ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
         guild = member.guild
         auto_channel = after.channel
         category_id = AUTO_CHANNELS[auto_channel.id]
         category = guild.get_channel(category_id)
 
+        print(f"[INFO] {member} зашёл в автоканал {auto_channel.name}")
+
         prefix = "_ZP" if auto_channel.name == "🔊Poslucháreň" else " "
 
-        # Сбор существующих номеров
+        # Поиск занятых номеров
         existing_numbers = set()
         for channel in category.voice_channels:
             if channel.name.startswith(auto_channel.name + prefix):
-                suffix = channel.name.replace(auto_channel.name + prefix, "").strip()
-                if suffix.isdigit():
-                    existing_numbers.add(int(suffix))
+                try:
+                    num = int(channel.name.replace(auto_channel.name + prefix, "").strip())
+                    existing_numbers.add(num)
+                except ValueError:
+                    continue
 
-        # Поиск свободного номера
+        # Поиск свободной цифры
         new_number = 1
         while new_number in existing_numbers:
             new_number += 1
 
         new_channel_name = f"{auto_channel.name}{prefix}{new_number}"
+
+        print(f"[CREATE] Создаётся канал: {new_channel_name}")
 
         # Права
         overwrites = {
@@ -1916,26 +1925,38 @@ async def on_voice_state_update(member, before, after):
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
-        # Создание канала и перемещение
+        # Создание канала
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
             overwrites=overwrites,
             category=category
         )
-        await member.move_to(new_channel)
 
-    # === Удаление пустого канала ===
-    # Проверяем, если пользователь покинул кастомный канал
-    if before.channel and before.channel.category_id in AUTO_CHANNELS.values():
-        category = before.channel.category
-        if before.channel.name.startswith("🔊Poslucháreň") or before.channel.name.startswith(" "):
-            # Проверяем, что канал больше не используется
-            await asyncio.sleep(5)
-            if len(before.channel.members) == 0:
-                try:
-                    await before.channel.delete()
-                except Exception as e:
-                    print(f"Ошибка при удалении: {e}")
+        await member.move_to(new_channel)
+        print(f"[MOVE] {member} перемещён в {new_channel.name}")
+
+    # === УДАЛЕНИЕ ПУСТОГО КАНАЛА ===
+    if before.channel:
+        if before.channel.id in AUTO_CHANNELS:
+            return
+
+        if before.channel.category_id not in AUTO_CHANNELS.values():
+            return
+
+        name = before.channel.name
+        if not any(name.startswith(f"{base}_ZP") or name.startswith(f"{base} ") for base in ["🔊Poslucháreň", "ДругиеНазваниеЕслиЕсть"]):
+            return
+
+        print(f"[CHECK] {member} покинул {before.channel.name}, проверка на пустоту через 5 секунд...")
+        await asyncio.sleep(5)
+
+        if len(before.channel.members) == 0:
+            try:
+                await before.channel.delete()
+                print(f"[DELETE] Удалён пустой канал: {before.channel.name}")
+            except Exception as e:
+                print(f"[ERROR] Не удалось удалить канал {before.channel.name}: {e}")
+
 
 @bot.command()
 async def petition(ctx, *, text=None):
