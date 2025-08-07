@@ -1953,6 +1953,10 @@ async def on_voice_state_update(member, before, after):
                 print(f"[ERROR] Не удалось удалить канал {before.channel.name}: {e}")
 
 
+import json
+import nextcord
+from nextcord.ext import commands
+
 @bot.command()
 async def petition(ctx, *, text=None):
     await ctx.message.delete()
@@ -1960,7 +1964,7 @@ async def petition(ctx, *, text=None):
         await ctx.send(
             "❗ Неверное использование команды!\n"
             "Правильно: `!petition <текст петиции>`\n"
-            "Пример: `!petition Добавить новые смайлики в сервер`",
+            "Пример: `!petition Добавить новые смайлики на сервер`",
             delete_after=15
         )
         return
@@ -1972,7 +1976,7 @@ async def petition(ctx, *, text=None):
         petitions = []
 
     petition_id = len(petitions) + 1
-    required_votes = max(1, int(ctx.guild.member_count * 0.1))  # 10%
+    required_votes = max(1, int(ctx.guild.member_count * 0.1))
 
     petition_data = {
         "id": petition_id,
@@ -1991,52 +1995,72 @@ async def petition(ctx, *, text=None):
     with open("petitions.json", "w", encoding="utf-8") as f:
         json.dump(petitions, f, indent=4)
 
-    class VoteButton(Button):
-        def __init__(self, petition_data, petitions):
-            super().__init__(label="Подписать", style=nextcord.ButtonStyle.success)
-            self.petition_data = petition_data
-            self.petitions = petitions
-
-        async def callback(self, interaction: nextcord.Interaction):
-            if self.petition_data["status"] != "active":
-                await interaction.response.send_message(
-                    "Эта петиция уже закрыта и подписать её нельзя.", ephemeral=True
-                )
-                return
-
-            if str(interaction.user.id) in self.petition_data["voters"]:
-                await interaction.response.send_message("Вы уже подписали эту петицию.", ephemeral=True)
-                return
-
-            self.petition_data["votes"] += 1
-            self.petition_data["voters"].append(str(interaction.user.id))
-
-            with open("petitions.json", "w", encoding="utf-8") as f:
-                json.dump(self.petitions, f, indent=4)
-
-            content = (
-                f"**Петиция №{self.petition_data['id']}**\n"
-                f"{self.petition_data['text']}\n\n"
-                f"Автор: <@{self.petition_data['author']}>\n"
-                f"Подписей: {self.petition_data['votes']}/{self.petition_data['required_votes']}"
-            )
-
-            if self.petition_data["votes"] >= self.petition_data["required_votes"]:
-                content += "\n\n🔔 Петиция достигла необходимого количества голосов и может быть рассмотрена."
-
-            await interaction.response.edit_message(content=content, view=self.view)
-
-    view = View()
-    view.add_item(VoteButton(petition_data, petitions))
-
     sent_message = await ctx.send(
-        f"**Петиция №{petition_id}**\n{text}\n\nАвтор: <@{ctx.author.id}>\nПодписей: 0/{required_votes}",
-        view=view
+        f"**Петиция №{petition_id}**\n{text}\n\n"
+        f"Автор: <@{ctx.author.id}>\n"
+        f"Подписей: 0/{required_votes}\n"
+        f"Подпиши петицию командой: `!vote {petition_id}`"
     )
 
     petition_data["message_id"] = sent_message.id
     with open("petitions.json", "w", encoding="utf-8") as f:
         json.dump(petitions, f, indent=4)
+
+
+@bot.command()
+async def vote(ctx, petition_id: int = None):
+    await ctx.message.delete()
+
+    if petition_id is None:
+        await ctx.send("❗ Укажи номер петиции. Пример: `!vote 1`", delete_after=10)
+        return
+
+    try:
+        with open("petitions.json", "r", encoding="utf-8") as f:
+            petitions = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        await ctx.send("❗ Петиции не найдены.", delete_after=10)
+        return
+
+    petition = next((p for p in petitions if p["id"] == petition_id), None)
+
+    if not petition:
+        await ctx.send("❗ Петиция с таким номером не найдена.", delete_after=10)
+        return
+
+    if petition["status"] != "active":
+        await ctx.send("❌ Эта петиция уже закрыта и подписать её нельзя.", delete_after=10)
+        return
+
+    if str(ctx.author.id) in petition["voters"]:
+        await ctx.send("🔁 Ты уже подписал эту петицию.", delete_after=10)
+        return
+
+    petition["votes"] += 1
+    petition["voters"].append(str(ctx.author.id))
+
+    with open("petitions.json", "w", encoding="utf-8") as f:
+        json.dump(petitions, f, indent=4)
+
+    content = (
+        f"**Петиция №{petition['id']}**\n"
+        f"{petition['text']}\n\n"
+        f"Автор: <@{petition['author']}>\n"
+        f"Подписей: {petition['votes']}/{petition['required_votes']}"
+    )
+
+    if petition["votes"] >= petition["required_votes"]:
+        content += "\n\n🔔 Петиция достигла необходимого количества голосов и может быть рассмотрена."
+
+    try:
+        # Обновим оригинальное сообщение с петицией, если оно всё ещё существует
+        channel = ctx.channel
+        message = await channel.fetch_message(petition["message_id"])
+        await message.edit(content=content)
+    except Exception as e:
+        print(f"[Ошибка обновления петиции #{petition_id}] {e}")
+
+    await ctx.send("✅ Ты подписал петицию.", delete_after=5)
 
 
 @bot.command()
