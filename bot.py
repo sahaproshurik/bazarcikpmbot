@@ -2001,8 +2001,8 @@ async def petition(ctx, *, text=None):
         f"**Петиция №{petition_id}**\n{text}\n\n"
         f"Автор: <@{ctx.author.id}>\n"
         f"Подписей: 0/{required_votes}\n"
-        f"👮Голоса админов: 0/4\n\n"
-        f"📢Подпиши петицию командой: `!vote {petition_id}`"
+        f"👮 Голоса админов: 0/4\n\n"
+        f"📢 Подпиши петицию командой: `!vote {petition_id}`"
     )
 
     petition_data["message_id"] = sent_message.id
