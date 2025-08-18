@@ -1897,14 +1897,16 @@ async def on_voice_state_update(member, before, after):
 
         # print(f"[INFO] {member} зашёл в автоканал {auto_channel.name}")
 
-        prefix = "_ZP" if auto_channel.name == "🔊Poslucháreň" else " "
+        new_name = auto_channel.name.replace("Create", "")
+
+        prefix = "_ZP" if new_name == "🔊Poslucháreň" else " "
 
         # Поиск занятых номеров
         existing_numbers = set()
         for channel in category.voice_channels:
-            if channel.name.startswith(auto_channel.name + prefix):
+            if channel.name.startswith(new_name + prefix):
                 try:
-                    num = int(channel.name.replace(auto_channel.name + prefix, "").strip())
+                    num = int(channel.name.replace(new_name + prefix, "").strip())
                     existing_numbers.add(num)
                 except ValueError:
                     continue
@@ -1914,7 +1916,7 @@ async def on_voice_state_update(member, before, after):
         while new_number in existing_numbers:
             new_number += 1
 
-        new_channel_name = f"{auto_channel.name}{prefix}{new_number}"
+        new_channel_name = f"{new_name}{prefix}{new_number}"
 
         # print(f"[CREATE] Создаётся канал: {new_channel_name}")
 
