@@ -1899,7 +1899,7 @@ async def on_voice_state_update(member, before, after):
 
         new_name = auto_channel.name.replace("Create", "")
 
-        prefix = "_ZP" if new_name == "🔊Poslucháreň" else " "
+        prefix = "_ZP" if new_name == "🔊 Poslucháreň" else " "
 
         # Поиск занятых номеров
         existing_numbers = set()
