@@ -1927,11 +1927,14 @@ async def on_voice_state_update(member, before, after):
         }
 
         # Создание канала
+        # Создание канала
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
-            category=category,
-            sync_permissions=True  # 🔥 синхронизация прав с категорией
+            category=category
         )
+
+        # Синхронизация прав с категорией
+        await new_channel.edit(sync_permissions=True)
 
         await member.move_to(new_channel)
 
