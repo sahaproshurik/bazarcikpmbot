@@ -1922,7 +1922,7 @@ async def on_voice_state_update(member, before, after):
 
         # Права
         overwrites = {
-            guild.default_role: nextcord.PermissionOverwrite(connect=False),
+            guild.default_role: nextcord.PermissionOverwrite(connect=True),
             member: nextcord.PermissionOverwrite(connect=True, manage_channels=True),
         }
 
