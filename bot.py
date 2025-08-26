@@ -1929,11 +1929,12 @@ async def on_voice_state_update(member, before, after):
         # Создание канала
         new_channel = await guild.create_voice_channel(
             name=new_channel_name,
-            overwrites=overwrites,
-            category=category
+            category=category,
+            sync_permissions=True  # 🔥 синхронизация прав с категорией
         )
 
         await member.move_to(new_channel)
+
         # print(f"[MOVE] {member} перемещён в {new_channel.name}")
 
     # === УДАЛЕНИЕ ПУСТОГО КАНАЛА ===
