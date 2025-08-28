@@ -1879,6 +1879,18 @@ async def on_member_join(member):
 
 # channel: category
 
+fortune_members = [
+    "Игрок NIKUSA",
+    "Игрок REOSTISLAV",
+    "Игрок TANCHIK",
+    "Игрок STROLEKOFK"
+]
+
+@bot.command(name="fortune")
+async def fortune(ctx):
+    winner = random.choice(fortune_members)
+    await ctx.send(f"🎉 Сегодня удача не на стороне: **{winner}**!")
+
 AUTO_CHANNELS = {
     1402746822191218749: 1402733375986466816,
     1402746847713296526: 1402732822375960676,
