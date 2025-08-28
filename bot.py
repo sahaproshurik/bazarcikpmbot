@@ -1888,6 +1888,7 @@ fortune_members = [
 
 @bot.command(name="random")
 async def fortune(ctx):
+    await ctx.message.delete()
     winner = random.choice(fortune_members)
     await ctx.send(f"🎉 Сегодня удача не на стороне: **{winner}**!")
 
