@@ -1886,7 +1886,7 @@ fortune_members = [
     "Игрок STROLEKOFK"
 ]
 
-@bot.command(name="fortune")
+@bot.command(name="random")
 async def fortune(ctx):
     winner = random.choice(fortune_members)
     await ctx.send(f"🎉 Сегодня удача не на стороне: **{winner}**!")
