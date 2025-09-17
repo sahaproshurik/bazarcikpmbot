@@ -1999,7 +1999,7 @@ async def petition(ctx, *, text=None):
         petitions = []
 
     petition_id = len(petitions) + 1
-    required_votes = max(1, int(ctx.guild.member_count * 0.1))
+    required_votes = max(1, int(ctx.guild.member_count * 0.1)) - 1
 
     petition_data = {
         "id": petition_id,
@@ -2024,7 +2024,7 @@ async def petition(ctx, *, text=None):
         f"**Петиция №{petition_id}**\n{text}\n\n"
         f"Автор: <@{ctx.author.id}>\n"
         f"Подписей: 0/{required_votes}\n"
-        f"👮 Голоса админов: 0/4\n\n"
+        f"👮 Голоса админов: 0/3\n\n"
         f"📢 Подпиши петицию командой: `!vote {petition_id}`"
     )
 
@@ -2078,7 +2078,7 @@ async def vote(ctx, petition_id: int = None):
 
     # Добавим поле для голосов админов
     admin_votes = petition.get("admin_votes", {})
-    content += f"\n👮 Голоса админов: {len(admin_votes)}/4"
+    content += f"\n👮 Голоса админов: {len(admin_votes)}/3"
 
     if petition["votes"] >= petition["required_votes"]:
         content += (
@@ -2146,7 +2146,7 @@ async def handle_admin_vote(ctx, petition_id: int, vote_type: str):
             total_votes = len(petition["reviews"]["yes"]) + len(petition["reviews"]["no"])
             result_text = None
 
-            if total_votes >= 4:
+            if total_votes >= 3:
                 if len(petition["reviews"]["yes"]) > len(petition["reviews"]["no"]):
                     petition["status"] = "approved"
                     result_text = "✅ Одобрена"
@@ -2170,7 +2170,7 @@ async def handle_admin_vote(ctx, petition_id: int, vote_type: str):
                     f"Подписей: {petition['votes']}/{petition['required_votes']}"
                 )
 
-                content += f"\n👮 Голоса админов: {total_votes}/4"
+                content += f"\n👮 Голоса админов: {total_votes}/3"
 
                 if petition["status"] == "active":
                     content += (
@@ -2186,7 +2186,7 @@ async def handle_admin_vote(ctx, petition_id: int, vote_type: str):
                 print(f"[Ошибка обновления сообщения петиции #{petition_id}] {e}")
 
             if petition["status"] == "active":
-                await ctx.send(f"Ваш голос засчитан. Сейчас проголосовало {total_votes}/4 админов.", delete_after=10)
+                await ctx.send(f"Ваш голос засчитан. Сейчас проголосовало {total_votes}/3 админов.", delete_after=10)
             return
 
     await ctx.send("Петиция не найдена.", delete_after=10)
