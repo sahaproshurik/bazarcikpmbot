@@ -1,0 +1,5 @@
+nextcord
+apscheduler
+Pillow
+python-dotenv
+pytz
