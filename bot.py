@@ -44,17 +44,20 @@ def save_json(path, data):
 # ============================================================
 #  DATA FILES & GLOBAL STATE
 # ============================================================
-FUNDS_FILE      = "player_funds.json"
-LOANS_FILE      = "player_loans.json"
-BUSINESS_FILE   = "player_businesses.json"
-PRIEMER_FILE    = "priemer_data.json"
-ORDERS_FILE     = "orders_completed.json"
-XP_FILE         = "player_xp.json"
-INVENTORY_FILE  = "player_inventory.json"
-DAILY_FILE      = "player_daily.json"
-BANK_FILE       = "player_bank.json"
-SERVER_EFF_FILE = "server_effects.json"
-WARNS_FILE      = "player_warns.json"
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+FUNDS_FILE      = f"{DATA_DIR}/player_funds.json"
+LOANS_FILE      = f"{DATA_DIR}/player_loans.json"
+BUSINESS_FILE   = f"{DATA_DIR}/player_businesses.json"
+PRIEMER_FILE    = f"{DATA_DIR}/priemer_data.json"
+ORDERS_FILE     = f"{DATA_DIR}/orders_completed.json"
+XP_FILE         = f"{DATA_DIR}/player_xp.json"
+INVENTORY_FILE  = f"{DATA_DIR}/player_inventory.json"
+DAILY_FILE      = f"{DATA_DIR}/player_daily.json"
+BANK_FILE       = f"{DATA_DIR}/player_bank.json"
+SERVER_EFF_FILE = f"{DATA_DIR}/server_effects.json"
+WARNS_FILE      = f"{DATA_DIR}/player_warns.json"
 
 player_funds      = load_json(FUNDS_FILE)
 player_loans      = load_json(LOANS_FILE)
