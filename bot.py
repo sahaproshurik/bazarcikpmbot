@@ -1145,16 +1145,21 @@ async def roulette(ctx, bet: int, choice: str):
     won = 0
     ch  = choice.lower()
 
-    if   ch == "red"   and color == "red":   won = bet * 2
-    elif ch == "black" and color == "black": won = bet * 2
-    elif ch == "green" and color == "green": won = bet * 14
-    elif ch.isdigit():
-        if int(ch) == number:
-            won = bet * 35
-    else:
+    if ch not in ["red", "black", "green"] and not (ch.isdigit() and 0 <= int(ch) <= 36):
         player_funds[uid] += bet
         save_funds()
-        await ctx.send("❌ Выбор: red / black / green / число 0-36", delete_after=5); return
+        await ctx.send("❌ Выбор: red / black / green / число 0-36", delete_after=5)
+        return
+
+    won = 0
+    if ch == "red" and color == "red": 
+        won = bet * 2
+    elif ch == "black" and color == "black": 
+        won = bet * 2
+    elif ch == "green" and color == "green": 
+        won = bet * 14
+    elif ch.isdigit() and int(ch) == number:
+        won = bet * 35
 
     player_funds[uid] += won
     save_funds()
