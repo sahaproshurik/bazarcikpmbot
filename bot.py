@@ -2073,104 +2073,10 @@ def generate_greeting():
     else:
         print(f"[AUDIO] Файл уже существует: {AUDIO_FILE}")
 
+_greeting_lock = asyncio.Lock()
+
 @bot.event
 async def on_voice_state_update(member, before, after):
-
-    # === ПРИВЕТСТВИЕ ===
-    if (member.id == YOUR_USER_ID
-            and member.id != bot.user.id
-            and after.channel is not None
-            and after.channel.id not in AUTO_CHANNELS
-            and (before.channel is None or before.channel.id != after.channel.id)):
-
-        await asyncio.sleep(2)  # ждём пока канал создастся
-
-        channel = member.voice.channel if member.voice else after.channel
-        if channel is None:
-            print("[AUDIO] Канал не найден после ожидания")
-            return
-
-        print(f"[AUDIO] Начинаем приветствие в канале: {channel.name}")
-
-        # Отключаем бота если уже в канале
-        for vc_old in list(bot.voice_clients):
-            if vc_old.guild.id == channel.guild.id:
-                try:
-                    await vc_old.disconnect(force=True)
-                    await asyncio.sleep(3)  # ждём полного отключения
-                except Exception:
-                    pass
-
-        await asyncio.sleep(1)
-
-        vc = None
-        greeted = False
-
-        try:
-            print(f"[AUDIO] Подключаемся...")
-            vc = await channel.connect(timeout=30.0, reconnect=True)
-            await asyncio.sleep(1.5)
-            print(f"[AUDIO] Подключились: {vc.is_connected()}")
-
-            if not os.path.exists(AUDIO_FILE):
-                print("[AUDIO] Файл не найден, генерируем...")
-                generate_greeting()
-
-            if not os.path.exists(AUDIO_FILE):
-                print("[AUDIO] Файл всё равно не найден!")
-                await vc.disconnect(force=True)
-                return
-
-            print(f"[AUDIO] Играем файл: {AUDIO_FILE}")
-
-            finished = asyncio.Event()
-
-            def after_play(error):
-                if error:
-                    print(f"[AUDIO] Ошибка при воспроизведении: {error}")
-                else:
-                    print(f"[AUDIO] Воспроизведение завершено!")
-                bot.loop.call_soon_threadsafe(finished.set)
-
-            source = nextcord.FFmpegPCMAudio(
-                AUDIO_FILE,
-                executable="ffmpeg",
-                before_options="-re",
-                options="-loglevel panic"
-            )
-            vc.play(source, after=after_play)
-
-            print(f"[AUDIO] is_playing сразу: {vc.is_playing()}")
-
-            try:
-                await asyncio.wait_for(finished.wait(), timeout=20.0)
-                greeted = True
-            except asyncio.TimeoutError:
-                print("[AUDIO] Таймаут! Файл не доиграл за 20 секунд")
-
-        except Exception as e:
-            import traceback
-            print(f"[AUDIO] Ошибка: {e}")
-            traceback.print_exc()
-        finally:
-            if vc and vc.is_connected():
-                await vc.disconnect(force=True)
-                print("[AUDIO] Отключились от канала")
-
-        if not greeted:
-            print("[AUDIO] Не удалось поприветствовать — кикаем всех!")
-            try:
-                ch = member.guild.get_channel(channel.id)
-                if ch:
-                    for m in list(ch.members):
-                        if m.id != YOUR_USER_ID:
-                            try:
-                                await m.move_to(None)
-                                print(f"[AUDIO] Кикнул {m.name}")
-                            except Exception as e:
-                                print(f"[AUDIO] Не удалось кикнуть {m.name}: {e}")
-            except Exception as e:
-                print(f"[AUDIO] Ошибка кика: {e}")
 
     # === СОЗДАНИЕ АВТО-КАНАЛА ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
@@ -2192,6 +2098,95 @@ async def on_voice_state_update(member, before, after):
         new_ch = await guild.create_voice_channel(name=f"{new_name}{prefix}{num}", category=category)
         await new_ch.edit(sync_permissions=True)
         await member.move_to(new_ch)
+        return  # ← выходим, следующий ивент сработает для нового канала
+
+    # === ПРИВЕТСТВИЕ ===
+    if (member.id == YOUR_USER_ID
+            and after.channel is not None
+            and (before.channel is None or before.channel.id != after.channel.id)):
+
+        if _greeting_lock.locked():
+            print("[AUDIO] Уже выполняется приветствие, пропускаем")
+            return
+
+        async with _greeting_lock:
+            await asyncio.sleep(1)
+
+            channel = member.voice.channel if member.voice else None
+            if channel is None:
+                print("[AUDIO] Канал не найден")
+                return
+
+            print(f"[AUDIO] Канал: {channel.name} (id={channel.id})")
+
+            # Принудительно отключаем все голосовые соединения
+            for vc_old in list(bot.voice_clients):
+                try:
+                    await vc_old.disconnect(force=True)
+                except Exception:
+                    pass
+            await asyncio.sleep(2)
+
+            vc = None
+            greeted = False
+
+            try:
+                print("[AUDIO] Подключаемся...")
+                vc = await asyncio.wait_for(
+                    channel.connect(reconnect=False),
+                    timeout=15.0
+                )
+                print(f"[AUDIO] Подключились! is_connected={vc.is_connected()}")
+                await asyncio.sleep(1)
+
+                if not os.path.exists(AUDIO_FILE):
+                    generate_greeting()
+
+                finished = asyncio.Event()
+
+                def after_play(error):
+                    if error:
+                        print(f"[AUDIO] Ошибка воспроизведения: {error}")
+                    else:
+                        print("[AUDIO] Воспроизведение завершено!")
+                    bot.loop.call_soon_threadsafe(finished.set)
+
+                source = nextcord.FFmpegPCMAudio(
+                    AUDIO_FILE,
+                    executable="ffmpeg",
+                    options="-loglevel panic"
+                )
+                vc.play(source, after=after_play)
+                print(f"[AUDIO] is_playing: {vc.is_playing()}")
+
+                try:
+                    await asyncio.wait_for(finished.wait(), timeout=15.0)
+                    greeted = True
+                except asyncio.TimeoutError:
+                    print("[AUDIO] Таймаут воспроизведения")
+
+            except asyncio.TimeoutError:
+                print("[AUDIO] Таймаут подключения к каналу!")
+            except Exception as e:
+                import traceback
+                print(f"[AUDIO] Ошибка: {e}")
+                traceback.print_exc()
+            finally:
+                if vc and vc.is_connected():
+                    await vc.disconnect(force=True)
+                    print("[AUDIO] Отключились")
+
+            if not greeted:
+                print("[AUDIO] Кикаем всех!")
+                ch = member.guild.get_channel(channel.id)
+                if ch:
+                    for m in list(ch.members):
+                        if m.id != YOUR_USER_ID:
+                            try:
+                                await m.move_to(None)
+                                print(f"[AUDIO] Кикнул {m.name}")
+                            except Exception as e:
+                                print(f"[AUDIO] Не удалось кикнуть {m.name}: {e}")
 
     # === УДАЛЕНИЕ ПУСТОГО КАНАЛА ===
     if before.channel:
