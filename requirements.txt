@@ -1,4 +1,5 @@
-nextcord
+git+https://github.com/nextcord/nextcord.git
+PyNaCl
 apscheduler
 Pillow
 python-dotenv
