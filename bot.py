@@ -1,7 +1,7 @@
-import nextcord
-from nextcord.ext import commands, tasks
-from nextcord.ui import View, Button
-from nextcord import Interaction
+import discord
+from discord.ext import commands, tasks
+from discord.ui import View, Button
+from discord import Interaction
 import asyncio
 import random
 import json
@@ -18,7 +18,7 @@ from gtts import gTTS
 # ============================================================
 #  BOT SETUP
 # ============================================================
-intents = nextcord.Intents.default()
+intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 intents.voice_states = True
@@ -150,7 +150,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 @bot.command(name="level")
-async def show_level(ctx, member: nextcord.Member = None):
+async def show_level(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
         member = ctx.author
@@ -160,7 +160,7 @@ async def show_level(ctx, member: nextcord.Member = None):
     needed    = xp_for_level(lvl)
     bar_fill  = int((cur / needed) * 20) if needed else 20
     bar       = "█" * bar_fill + "░" * (20 - bar_fill)
-    embed = nextcord.Embed(title=f"📊 Уровень {member.display_name}", color=nextcord.Color.purple())
+    embed = discord.Embed(title=f"📊 Уровень {member.display_name}", color=discord.Color.purple())
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="⭐ Уровень", value=str(lvl), inline=True)
     embed.add_field(name="✨ Всего XP", value=str(total), inline=True)
@@ -185,7 +185,7 @@ async def check_funds(ctx):
     uid  = str(ctx.author.id)
     cash = player_funds.get(uid, 0)
     bank = player_bank.get(uid, 0)
-    embed = nextcord.Embed(title=f"💼 Баланс {ctx.author.display_name}", color=nextcord.Color.gold())
+    embed = discord.Embed(title=f"💼 Баланс {ctx.author.display_name}", color=discord.Color.gold())
     embed.add_field(name="💰 Наличные", value=f"{cash:,}", inline=True)
     embed.add_field(name="🏦 Банк",     value=f"{bank:,}",  inline=True)
     embed.add_field(name="💎 Всего",    value=f"{cash+bank:,}", inline=True)
@@ -193,7 +193,7 @@ async def check_funds(ctx):
     await ctx.send(embed=embed)
 
 @bot.command(name="pay")
-async def pay(ctx, member: nextcord.Member, amount: int):
+async def pay(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     sender   = str(ctx.author.id)
     receiver = str(member.id)
@@ -250,7 +250,7 @@ async def leaderboard(ctx):
         except Exception:
             name = f"<@{uid}>"
         lines.append(f"{medals[i]} **{name}** — {total:,} 💰")
-    embed = nextcord.Embed(title="💎 Топ-10 богатейших", color=nextcord.Color.gold(), description="\n".join(lines) or "—")
+    embed = discord.Embed(title="💎 Топ-10 богатейших", color=discord.Color.gold(), description="\n".join(lines) or "—")
     await ctx.send(embed=embed)
 
 @bot.command(name="toplevel")
@@ -267,7 +267,7 @@ async def top_level(ctx):
         except Exception:
             name = f"<@{uid}>"
         lines.append(f"{medals[i]} **{name}** — Lvl {lvl} ({xp:,} XP)")
-    embed = nextcord.Embed(title="⭐ Топ-10 по уровням", color=nextcord.Color.blurple(), description="\n".join(lines) or "—")
+    embed = discord.Embed(title="⭐ Топ-10 по уровням", color=discord.Color.blurple(), description="\n".join(lines) or "—")
     await ctx.send(embed=embed)
 
 # ============================================================
@@ -310,7 +310,7 @@ async def daily_bonus(ctx):
 ROB_CD: dict = {}
 
 @bot.command(name="rob")
-async def rob(ctx, member: nextcord.Member):
+async def rob(ctx, member: discord.Member):
     await ctx.message.delete()
     await init_player(ctx)
     robber = str(ctx.author.id)
@@ -407,7 +407,7 @@ SHOP_ITEMS = {
 @bot.command(name="shop")
 async def shop(ctx):
     await ctx.message.delete()
-    embed = nextcord.Embed(title="🏪 Магазин BAZARCIK_PM", color=nextcord.Color.green())
+    embed = discord.Embed(title="🏪 Магазин BAZARCIK_PM", color=discord.Color.green())
     for iid, item in SHOP_ITEMS.items():
         embed.add_field(
             name=f"{item['name']} — {item['price']:,} 💰",
@@ -435,7 +435,7 @@ async def buy_shop_item(ctx, item_id: str):
     await ctx.send(f"✅ {ctx.author.mention} купил **{item['name']}** за **{price:,}** 💰!")
 
 @bot.command(name="inventory")
-async def inventory(ctx, member: nextcord.Member = None):
+async def inventory(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
         member = ctx.author
@@ -443,13 +443,13 @@ async def inventory(ctx, member: nextcord.Member = None):
     inv = {k: v for k, v in player_inventory.get(uid, {}).items() if v > 0 and k in SHOP_ITEMS}
     if not inv:
         await ctx.send(f"{member.mention}, инвентарь пуст.", delete_after=5); return
-    embed = nextcord.Embed(title=f"🎒 Инвентарь {member.display_name}", color=nextcord.Color.blue())
+    embed = discord.Embed(title=f"🎒 Инвентарь {member.display_name}", color=discord.Color.blue())
     for iid, qty in inv.items():
         embed.add_field(name=SHOP_ITEMS[iid]["name"], value=f"x{qty}", inline=True)
     await ctx.send(embed=embed)
 
 @bot.command(name="use")
-async def use_item(ctx, item_id: str, member: nextcord.Member = None):
+async def use_item(ctx, item_id: str, member: discord.Member = None):
     """Использовать предмет из инвентаря."""
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -574,7 +574,7 @@ async def fish(ctx):
 #  PROFILE
 # ============================================================
 @bot.command(name="profile")
-async def profile(ctx, member: nextcord.Member = None):
+async def profile(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
         member = ctx.author
@@ -587,7 +587,7 @@ async def profile(ctx, member: nextcord.Member = None):
     pm      = priemer_data.get(uid, 0)
     warns   = len(player_warns.get(uid, []))
 
-    embed = nextcord.Embed(title=f"👤 Профиль {member.display_name}", color=nextcord.Color.blurple())
+    embed = discord.Embed(title=f"👤 Профиль {member.display_name}", color=discord.Color.blurple())
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="⭐ Уровень",   value=str(lvl),       inline=True)
     embed.add_field(name="✨ Всего XP",  value=f"{total:,}",   inline=True)
@@ -859,10 +859,10 @@ class PickingView(View):
         self.user_id  = str(user_id)
         self._picking = False
 
-        self.pick_btn = Button(label="Skenovat' produkt", style=nextcord.ButtonStyle.green)
+        self.pick_btn = Button(label="Skenovat' produkt", style=discord.ButtonStyle.green)
         self.pick_btn.callback = self._pick
 
-        self.exit_btn = Button(label="Выйти с работы", style=nextcord.ButtonStyle.red, disabled=True)
+        self.exit_btn = Button(label="Выйти с работы", style=discord.ButtonStyle.red, disabled=True)
         self.exit_btn.callback = self._exit
 
         self.add_item(self.pick_btn)
@@ -931,7 +931,7 @@ class PickingView(View):
 
     async def _switch_to_finish(self, interaction: Interaction):
         self.clear_items()
-        fb = Button(label="Odoslat' objednavku", style=nextcord.ButtonStyle.blurple)
+        fb = Button(label="Odoslat' objednavku", style=discord.ButtonStyle.blurple)
         fb.callback = self._finish
         self.exit_btn.disabled = False
         self.add_item(fb); self.add_item(self.exit_btn)
@@ -967,7 +967,7 @@ class PickingView(View):
         if uid in ORDER_MESSAGES: del ORDER_MESSAGES[uid]
 
         self.clear_items()
-        nb = Button(label="Новый заказ", style=nextcord.ButtonStyle.green)
+        nb = Button(label="Новый заказ", style=discord.ButtonStyle.green)
         nb.callback = self._new_order
         self.exit_btn.disabled = False
         self.add_item(nb); self.add_item(self.exit_btn)
@@ -1016,14 +1016,14 @@ class PackingView(View):
 
         box_map = {"A":range(1,7),"B":range(7,13),"C":range(13,19),"D":range(19,25),"E":range(25,31)}
         for box in box_map:
-            btn = Button(label=f"Коробка {box}", style=nextcord.ButtonStyle.blurple)
+            btn = Button(label=f"Коробка {box}", style=discord.ButtonStyle.blurple)
             btn.callback = self._make_cb(box)
             self.add_item(btn)
 
-        self.collect_btn = Button(label="Собрать товар", style=nextcord.ButtonStyle.green, disabled=True)
+        self.collect_btn = Button(label="Собрать товар", style=discord.ButtonStyle.green, disabled=True)
         self.collect_btn.callback = self._collect
 
-        self.exit_btn = Button(label="Выйти с работы", style=nextcord.ButtonStyle.red, disabled=True)
+        self.exit_btn = Button(label="Выйти с работы", style=discord.ButtonStyle.red, disabled=True)
         self.exit_btn.callback = self._exit
 
         self.add_item(self.collect_btn)
@@ -1066,7 +1066,7 @@ class PackingView(View):
 
         self.clear_items()
         self.exit_btn.disabled = False
-        nb = Button(label="Новый заказ", style=nextcord.ButtonStyle.green)
+        nb = Button(label="Новый заказ", style=discord.ButtonStyle.green)
         nb.callback = self._new_order
         self.add_item(nb); self.add_item(self.exit_btn)
         await interaction.message.edit(
@@ -1123,7 +1123,7 @@ async def priemer_cmd(ctx):
     await ctx.message.delete()
     uid = str(ctx.author.id)
     pm  = priemer_data.get(uid, 0)
-    embed = nextcord.Embed(title=f"📦 Приемер {ctx.author.display_name}", color=nextcord.Color.orange())
+    embed = discord.Embed(title=f"📦 Приемер {ctx.author.display_name}", color=discord.Color.orange())
     bar_fill = int((pm / 150) * 20)
     bar = "█" * bar_fill + "░" * (20 - bar_fill)
     embed.add_field(name="Приемер",   value=f"{pm}/150")
@@ -1300,7 +1300,7 @@ async def repair_business_cmd(ctx, *, business_name: str):
     await ctx.send("❌ Бизнес не найден.", delete_after=5)
 
 @bot.command(name="businesses")
-async def list_businesses(ctx, member: nextcord.Member = None):
+async def list_businesses(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
     uid = str(member.id)
@@ -1309,7 +1309,7 @@ async def list_businesses(ctx, member: nextcord.Member = None):
     if not blist:
         await ctx.send(f"{member.mention} не имеет бизнесов.", delete_after=5); return
 
-    embed = nextcord.Embed(title=f"🏢 Бизнесы {member.display_name}", color=nextcord.Color.gold())
+    embed = discord.Embed(title=f"🏢 Бизнесы {member.display_name}", color=discord.Color.gold())
     for b in blist:
         status = "⬆️ Улучшен" if b.get("upgraded") else "🔷 Обычный"
         embed.add_field(
@@ -1321,7 +1321,7 @@ async def list_businesses(ctx, member: nextcord.Member = None):
 @bot.command(name="business_info")
 async def business_info_cmd(ctx):
     await ctx.message.delete()
-    embed = nextcord.Embed(title="📋 Типы бизнесов", color=nextcord.Color.blue())
+    embed = discord.Embed(title="📋 Типы бизнесов", color=discord.Color.blue())
     for name, d in business_types.items():
         embed.add_field(
             name=f"🏢 {name}",
@@ -1343,7 +1343,7 @@ async def active_effects_cmd(ctx):
     check_active_effects()
     if not server_effects:
         await ctx.send("❌ Нет активных эффектов.", delete_after=5); return
-    embed = nextcord.Embed(title="🔮 Активные серверные эффекты", color=nextcord.Color.purple())
+    embed = discord.Embed(title="🔮 Активные серверные эффекты", color=discord.Color.purple())
     for eff, end in server_effects.items():
         dt = datetime.fromtimestamp(end, tz=timezone.utc).strftime("%H:%M:%S UTC")
         embed.add_field(name=eff, value=f"До: {dt}", inline=False)
@@ -1356,7 +1356,7 @@ async def business_help_cmd(ctx):
         with open("business_help.txt", "r", encoding="utf-8") as f:
             await ctx.send(f.read())
     except FileNotFoundError:
-        embed = nextcord.Embed(title="🏢 Помощь по бизнесам", color=nextcord.Color.green())
+        embed = discord.Embed(title="🏢 Помощь по бизнесам", color=discord.Color.green())
         cmds  = [
             ("!buy_business <тип> <название>", "Купить бизнес"),
             ("!sell_business <название>",      "Продать бизнес"),
@@ -1472,7 +1472,7 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
     player_funds[uid] = player_funds.get(uid, 0) + loan_amount
     save_funds(); save_loans()
 
-    embed = nextcord.Embed(title="✅ Кредит оформлен", color=nextcord.Color.green())
+    embed = discord.Embed(title="✅ Кредит оформлен", color=discord.Color.green())
     embed.add_field(name="Сумма",    value=f"{loan_amount:,} 💰")
     embed.add_field(name="Ставка",   value=f"{int(rate*100)}%")
     embed.add_field(name="Срок",     value=f"{loan_term} дней")
@@ -1513,7 +1513,7 @@ async def check_loan(ctx):
         await ctx.send(f"⚠️ {ctx.author.mention}, кредит просрочен! Долг удвоен. Новый срок: **{loan['due_date']}**")
         return
 
-    embed = nextcord.Embed(title=f"💳 Кредит {ctx.author.display_name}", color=nextcord.Color.red())
+    embed = discord.Embed(title=f"💳 Кредит {ctx.author.display_name}", color=discord.Color.red())
     embed.add_field(name="Сумма",      value=f"{loan['loan_amount']:,}")
     embed.add_field(name="Ставка",     value=f"{int(loan['interest_rate']*100)}%")
     embed.add_field(name="Итого",      value=f"{total:,}")
@@ -1571,11 +1571,11 @@ async def send_loan_warnings():
 # ============================================================
 @bot.command(name="mute")
 @commands.has_permissions(administrator=True)
-async def mute(ctx, member: nextcord.Member, mute_time: int):
+async def mute(ctx, member: discord.Member, mute_time: int):
     await ctx.message.delete()
     await ctx.send(f"⏳ {member.mention}, у тебя 1 минута перед мутом на **{mute_time}** минут.")
     await asyncio.sleep(60)
-    role = nextcord.utils.get(ctx.guild.roles, name="БАН банан🍌")
+    role = discord.utils.get(ctx.guild.roles, name="БАН банан🍌")
     if not role:
         role = await ctx.guild.create_role(name="БАН банан🍌")
         for ch in ctx.guild.text_channels:
@@ -1588,9 +1588,9 @@ async def mute(ctx, member: nextcord.Member, mute_time: int):
 
 @bot.command(name="unmute")
 @commands.has_permissions(administrator=True)
-async def unmute(ctx, member: nextcord.Member):
+async def unmute(ctx, member: discord.Member):
     await ctx.message.delete()
-    role = nextcord.utils.get(ctx.guild.roles, name="БАН банан🍌")
+    role = discord.utils.get(ctx.guild.roles, name="БАН банан🍌")
     if role and role in member.roles:
         await member.remove_roles(role)
         await ctx.send(f"🔊 {member.mention} размучен.")
@@ -1599,7 +1599,7 @@ async def unmute(ctx, member: nextcord.Member):
 
 @bot.command(name="ban")
 @commands.has_permissions(administrator=True)
-async def ban(ctx, member: nextcord.Member, ban_days: int):
+async def ban(ctx, member: discord.Member, ban_days: int):
     await ctx.message.delete()
     await ctx.send(f"⏳ {member.mention}, у тебя 1 минута перед баном на **{ban_days}** дней.")
     await asyncio.sleep(60)
@@ -1611,14 +1611,14 @@ async def ban(ctx, member: nextcord.Member, ban_days: int):
 
 @bot.command(name="kick")
 @commands.has_permissions(administrator=True)
-async def kick(ctx, member: nextcord.Member, *, reason: str = "Не указана"):
+async def kick(ctx, member: discord.Member, *, reason: str = "Не указана"):
     await ctx.message.delete()
     await member.kick(reason=reason)
     await ctx.send(f"👢 {member.mention} выгнан. Причина: **{reason}**")
 
 @bot.command(name="warn")
 @commands.has_permissions(administrator=True)
-async def warn_member(ctx, member: nextcord.Member, *, reason: str = "Не указана"):
+async def warn_member(ctx, member: discord.Member, *, reason: str = "Не указана"):
     await ctx.message.delete()
     uid = str(member.id)
     if uid not in player_warns: player_warns[uid] = []
@@ -1630,12 +1630,12 @@ async def warn_member(ctx, member: nextcord.Member, *, reason: str = "Не ук�
     except Exception: pass
 
 @bot.command(name="warns")
-async def check_warns(ctx, member: nextcord.Member = None):
+async def check_warns(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
     uid  = str(member.id)
     wrnl = player_warns.get(uid, [])
-    embed = nextcord.Embed(title=f"⚠️ Варны {member.display_name}", color=nextcord.Color.orange())
+    embed = discord.Embed(title=f"⚠️ Варны {member.display_name}", color=discord.Color.orange())
     if not wrnl:
         embed.description = "Нет предупреждений. ✅"
     else:
@@ -1645,7 +1645,7 @@ async def check_warns(ctx, member: nextcord.Member = None):
 
 @bot.command(name="clearwarn")
 @commands.has_permissions(administrator=True)
-async def clear_warns(ctx, member: nextcord.Member):
+async def clear_warns(ctx, member: discord.Member):
     await ctx.message.delete()
     uid = str(member.id)
     player_warns[uid] = []
@@ -1675,7 +1675,7 @@ async def clearday(ctx, days: int):
 
 @bot.command(name="clearuser")
 @commands.has_permissions(administrator=True)
-async def clearuser(ctx, member: nextcord.Member, amount: int):
+async def clearuser(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     if amount <= 0:
         await ctx.send("Количество > 0.", delete_after=5); return
@@ -1684,7 +1684,7 @@ async def clearuser(ctx, member: nextcord.Member, amount: int):
 
 @bot.command(name="clearuserday")
 @commands.has_permissions(administrator=True)
-async def clearuserdays(ctx, member: nextcord.Member, days: int):
+async def clearuserdays(ctx, member: discord.Member, days: int):
     await ctx.message.delete()
     if days <= 0:
         await ctx.send("Дней > 0.", delete_after=5); return
@@ -1699,10 +1699,10 @@ async def clearuserdays(ctx, member: nextcord.Member, days: int):
 #  INFO COMMANDS
 # ============================================================
 @bot.command(name="userinfo")
-async def user_info(ctx, member: nextcord.Member = None):
+async def user_info(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
-    embed = nextcord.Embed(title=f"👤 {member.display_name}", color=nextcord.Color.blue())
+    embed = discord.Embed(title=f"👤 {member.display_name}", color=discord.Color.blue())
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.add_field(name="Имя",           value=member.display_name)
     embed.add_field(name="ID",            value=str(member.id))
@@ -1715,7 +1715,7 @@ async def user_info(ctx, member: nextcord.Member = None):
 async def server_info(ctx):
     await ctx.message.delete()
     g     = ctx.guild
-    embed = nextcord.Embed(title=f"🖥️ {g.name}", color=nextcord.Color.green())
+    embed = discord.Embed(title=f"🖥️ {g.name}", color=discord.Color.green())
     embed.add_field(name="ID",         value=str(g.id))
     embed.add_field(name="Создан",     value=g.created_at.strftime("%d.%m.%Y"))
     embed.add_field(name="Участники",  value=str(g.member_count))
@@ -1732,7 +1732,7 @@ async def moneyhelp(ctx):
         with open("moneyhelp.txt", "r", encoding="utf-8") as f:
             await ctx.send(f.read())
     except FileNotFoundError:
-        embed = nextcord.Embed(title="💰 Денежная система", color=nextcord.Color.gold())
+        embed = discord.Embed(title="💰 Денежная система", color=discord.Color.gold())
         cmds  = [
             ("!money",                  "Баланс (наличные + банк)"),
             ("!pay @user сумма",        "Перевод"),
@@ -1767,17 +1767,17 @@ async def tell_prediction(ctx):
     await ctx.send(f"{ctx.author.mention} {random.choice(predictions)}")
 
 @bot.command(name="greet")
-async def greet_user(ctx, member: nextcord.Member):
+async def greet_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"Привет {member.mention} от бота базарчик пм")
 
 @bot.command(name="pick")
-async def pick_user(ctx, member: nextcord.Member):
+async def pick_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"{member.mention} а ну быстро зашол ато банчик")
 
 @bot.command(name="z")
-async def z_user(ctx, member: nextcord.Member):
+async def z_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(
         f"{member.mention}! Слухай уважно! Настав час остаточно та безповоротно відмовитися від усього, що пахне московією. "
@@ -1808,7 +1808,7 @@ async def magic_8ball(ctx, *, question: str = None):
         "❌ Не думаю.", "❌ Мои источники говорят нет.",
         "❌ Перспективы неутешительны.", "❌ Определённо нет.",
     ]
-    embed = nextcord.Embed(color=nextcord.Color.dark_blue())
+    embed = discord.Embed(color=discord.Color.dark_blue())
     embed.add_field(name="❓ Вопрос", value=question, inline=False)
     embed.add_field(name="🎱 Ответ",  value=random.choice(answers), inline=False)
     await ctx.send(embed=embed)
@@ -1830,7 +1830,7 @@ async def coinflip(ctx):
     await ctx.send(f"🪙 {ctx.author.mention} бросил монетку — **{result}**!")
 
 @bot.command(name="hug")
-async def hug(ctx, member: nextcord.Member):
+async def hug(ctx, member: discord.Member):
     await ctx.message.delete()
     msgs = [
         f"🤗 {ctx.author.mention} крепко обнимает {member.mention}!",
@@ -1840,20 +1840,20 @@ async def hug(ctx, member: nextcord.Member):
     await ctx.send(random.choice(msgs))
 
 @bot.command(name="slap")
-async def slap(ctx, member: nextcord.Member):
+async def slap(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"👋 {ctx.author.mention} дал пощёчину {member.mention}!")
 
 @bot.command(name="kiss")
-async def kiss(ctx, member: nextcord.Member):
+async def kiss(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"💋 {ctx.author.mention} поцеловал {member.mention}!")
 
 @bot.command(name="avatar")
-async def get_avatar(ctx, member: nextcord.Member = None):
+async def get_avatar(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
-    embed = nextcord.Embed(title=f"🖼️ Аватар {member.display_name}", color=nextcord.Color.blue())
+    embed = discord.Embed(title=f"🖼️ Аватар {member.display_name}", color=discord.Color.blue())
     embed.set_image(url=member.display_avatar.url)
     await ctx.send(embed=embed)
 
@@ -1867,17 +1867,17 @@ async def say(ctx, *, text: str):
 @commands.has_permissions(administrator=True)
 async def embed_cmd(ctx, title: str, *, text: str):
     await ctx.message.delete()
-    embed = nextcord.Embed(title=title, description=text, color=nextcord.Color.blurple())
+    embed = discord.Embed(title=title, description=text, color=discord.Color.blurple())
     await ctx.send(embed=embed)
 
 @bot.command(name="announce")
 @commands.has_permissions(administrator=True)
 async def announce(ctx, *, text: str):
     await ctx.message.delete()
-    embed = nextcord.Embed(
+    embed = discord.Embed(
         title="📢 Объявление",
         description=text,
-        color=nextcord.Color.red()
+        color=discord.Color.red()
     )
     embed.set_footer(text=f"От {ctx.author.display_name}")
     await ctx.send("@here", embed=embed)
@@ -1887,7 +1887,7 @@ async def announce(ctx, *, text: str):
 # ============================================================
 @bot.command(name="give")
 @commands.has_permissions(administrator=True)
-async def give_money(ctx, member: nextcord.Member, amount: int):
+async def give_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     uid = str(member.id)
     player_funds[uid] = player_funds.get(uid, 0) + amount
@@ -1896,7 +1896,7 @@ async def give_money(ctx, member: nextcord.Member, amount: int):
 
 @bot.command(name="take")
 @commands.has_permissions(administrator=True)
-async def take_money(ctx, member: nextcord.Member, amount: int):
+async def take_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     uid = str(member.id)
     player_funds[uid] = max(0, player_funds.get(uid, 0) - amount)
@@ -1905,7 +1905,7 @@ async def take_money(ctx, member: nextcord.Member, amount: int):
 
 @bot.command(name="setmoney")
 @commands.has_permissions(administrator=True)
-async def set_money(ctx, member: nextcord.Member, amount: int):
+async def set_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     uid = str(member.id)
     player_funds[uid] = amount
@@ -2040,7 +2040,7 @@ async def list_petitions(ctx):
     if not active:
         await ctx.send("Нет активных петиций.", delete_after=5); return
 
-    embed = nextcord.Embed(title="📜 Активные петиции", color=nextcord.Color.blue())
+    embed = discord.Embed(title="📜 Активные петиции", color=discord.Color.blue())
     for p in active[:10]:
         embed.add_field(
             name=f"#{p['id']}: {p['text'][:60]}{'...' if len(p['text'])>60 else ''}",
@@ -2151,7 +2151,7 @@ async def on_voice_state_update(member, before, after):
                         print("[AUDIO] Воспроизведение завершено!")
                     bot.loop.call_soon_threadsafe(finished.set)
 
-                source = nextcord.FFmpegPCMAudio(
+                source = discord.FFmpegPCMAudio(
                     AUDIO_FILE,
                     executable="ffmpeg",
                     options="-loglevel panic"
@@ -2216,12 +2216,12 @@ class MyHelpCommand(commands.HelpCommand):
             with open("help.txt","r",encoding="utf-8") as f:
                 help_text = f.read()
             try: await ctx.author.send(help_text)
-            except nextcord.Forbidden: await ctx.send(f"{ctx.author.mention}, разреши ЛС!")
+            except discord.Forbidden: await ctx.send(f"{ctx.author.mention}, разреши ЛС!")
             return
         except FileNotFoundError:
             pass
 
-        embed = nextcord.Embed(title="📖 Помощь — BAZARCIK_PM", color=nextcord.Color.blurple())
+        embed = discord.Embed(title="📖 Помощь — BAZARCIK_PM", color=discord.Color.blurple())
         sections = {
             "💰 Экономика":  "!money !pay !deposit !withdraw !daily !top !toplevel",
             "🎯 Азарт":      "!rob !crime !fish !lotto !drawlotto",
@@ -2241,7 +2241,7 @@ class MyHelpCommand(commands.HelpCommand):
             embed.add_field(name=cat, value=cmds, inline=False)
         embed.set_footer(text="Префикс: ! | Также: !help <команда>")
         try: await ctx.author.send(embed=embed)
-        except nextcord.Forbidden: await ctx.send(embed=embed)
+        except discord.Forbidden: await ctx.send(embed=embed)
 
 bot.help_command = MyHelpCommand()
 
@@ -2286,7 +2286,7 @@ async def on_member_join(member):
     try:
         await member.send(
             f"👋 Привет, **{member.name}**! Добро пожаловать на **{member.guild.name}**!\n\n{help_text}")
-    except nextcord.Forbidden:
+    except discord.Forbidden:
         pass
 
 # ============================================================

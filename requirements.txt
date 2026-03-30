@@ -1,5 +1,4 @@
-git+https://github.com/nextcord/nextcord.git
-PyNaCl
+discord.py[voice]
 apscheduler
 Pillow
 python-dotenv
