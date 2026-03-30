@@ -2199,14 +2199,7 @@ YOUR_USER_ID = 539475816342487040  # Замінити на свій Discord User
 
 AUDIO_FILE = "greeting.mp3"
 
-intents = discord.Intents.default()
-intents.voice_states = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
-
 def generate_greeting():
-    """Генеруємо аудіо привітання якщо файл не існує"""
     if not os.path.exists(AUDIO_FILE):
         tts = gTTS("Привіт Юра Яковенко", lang="uk")
         tts.save(AUDIO_FILE)
@@ -2214,50 +2207,39 @@ def generate_greeting():
 
 @bot.event
 async def on_ready():
-    print(f"Бот запущений як {bot.user}")
-    generate_greeting()
+    print(f'Logged in as {bot.user.name}')
+    generate_greeting()          # ← add this line
+    send_loan_warnings.start()
 
 @bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    # Тільки коли саме ти заходиш у канал
-    if member.id != YOUR_USER_ID:
-        return
-    if after.channel is None or before.channel == after.channel:
-        return
-
-    channel = after.channel
-    greeted = False
-
-    try:
-        # Бот заходить у той самий канал
-        vc = await channel.connect()
-
-        # Відтворюємо привітання
-        audio_source = discord.FFmpegPCMAudio(AUDIO_FILE)
-        vc.play(audio_source)
-
-        # Чекаємо поки програє
-        while vc.is_playing():
-            await asyncio.sleep(0.5)
-
-        greeted = True
-        await vc.disconnect()
-
-    except Exception as e:
-        print(f"Помилка при відтворенні: {e}")
-        if vc and vc.is_connected():
+async def on_voice_state_update(member, before, after):
+    # === GREETING for specific user ===
+    if member.id == YOUR_USER_ID and after.channel and before.channel != after.channel:
+        channel = after.channel
+        vc = None
+        greeted = False
+        try:
+            vc = await channel.connect()
+            audio_source = nextcord.FFmpegPCMAudio(AUDIO_FILE)
+            vc.play(audio_source)
+            while vc.is_playing():
+                await asyncio.sleep(0.5)
+            greeted = True
             await vc.disconnect()
+        except Exception as e:
+            print(f"Помилка при відтворенні: {e}")
+            if vc and vc.is_connected():
+                await vc.disconnect()
 
-    if not greeted:
-        # Якщо не привіталось — кікаємо всіх крім тебе
-        print("Не вдалось привітати — кікаємо всіх!")
-        for m in list(channel.members):
-            if m.id != YOUR_USER_ID:
-                try:
-                    await m.move_to(None)
-                    print(f"Кікнув {m.name}")
-                except Exception as e:
-                    print(f"Не вдалось кікнути {m.name}: {e}")
+        if not greeted:
+            print("Не вдалось привітати — кікаємо всіх!")
+            for m in list(channel.members):
+                if m.id != YOUR_USER_ID:
+                    try:
+                        await m.move_to(None)
+                        print(f"Кікнув {m.name}")
+                    except Exception as e:
+                        print(f"Не вдалось кікнути {m.name}: {e}")
 
 
 # Устанавливаем кастомную команду help
