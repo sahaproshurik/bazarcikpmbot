@@ -3,3 +3,5 @@ apscheduler
 Pillow
 python-dotenv
 pytz
+discord
+gtts
