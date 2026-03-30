@@ -2078,11 +2078,12 @@ async def on_voice_state_update(member, before, after):
 
     # === ПРИВЕТСТВИЕ ===
     if (member.id == YOUR_USER_ID
+            and member.id != bot.user.id
             and after.channel is not None
             and after.channel.id not in AUTO_CHANNELS
             and (before.channel is None or before.channel.id != after.channel.id)):
 
-        await asyncio.sleep(1.5)  # ждём пока канал создастся
+        await asyncio.sleep(2)  # ждём пока канал создастся
 
         channel = member.voice.channel if member.voice else after.channel
         if channel is None:
@@ -2096,16 +2097,18 @@ async def on_voice_state_update(member, before, after):
             if vc_old.guild.id == channel.guild.id:
                 try:
                     await vc_old.disconnect(force=True)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(3)  # ждём полного отключения
                 except Exception:
                     pass
+
+        await asyncio.sleep(1)
 
         vc = None
         greeted = False
 
         try:
             print(f"[AUDIO] Подключаемся...")
-            vc = await channel.connect(timeout=30.0, reconnect=False)
+            vc = await channel.connect(timeout=30.0, reconnect=True)
             await asyncio.sleep(1.5)
             print(f"[AUDIO] Подключились: {vc.is_connected()}")
 
