@@ -1902,6 +1902,54 @@ AUTO_CHANNELS = {
 
 @bot.event
 async def on_voice_state_update(member, before, after):
+    # === ПРИВЕТСТВИЕ ===
+    if member.id == YOUR_USER_ID and after.channel and before.channel != after.channel:
+        channel = after.channel
+        vc = None
+        greeted = False
+
+        # Проверяем, не подключён ли бот уже к какому-то каналу
+        for voice_client in bot.voice_clients:
+            if voice_client.guild == channel.guild:
+                await voice_client.disconnect()
+
+        try:
+            print(f"[AUDIO] Подключаемся к каналу: {channel.name}")
+            vc = await channel.connect()
+            await asyncio.sleep(0.5)  # небольшая пауза перед воспроизведением
+
+            if not os.path.exists(AUDIO_FILE):
+                print(f"[AUDIO] Файл {AUDIO_FILE} не найден! Генерируем...")
+                generate_greeting()
+
+            print(f"[AUDIO] Начинаем воспроизведение {AUDIO_FILE}")
+            source = nextcord.FFmpegPCMAudio(AUDIO_FILE)
+            vc.play(source)
+
+            await asyncio.sleep(0.5)  # пауза чтобы is_playing() успел стать True
+
+            while vc.is_playing():
+                await asyncio.sleep(0.5)
+
+            print(f"[AUDIO] Воспроизведение завершено")
+            greeted = True
+            await vc.disconnect()
+
+        except Exception as e:
+            print(f"[AUDIO] Помилка при відтворенні: {e}")
+            if vc and vc.is_connected():
+                await vc.disconnect()
+
+        if not greeted:
+            print("[AUDIO] Не вдалось привітати — кікаємо всіх!")
+            for m in list(channel.members):
+                if m.id != YOUR_USER_ID:
+                    try:
+                        await m.move_to(None)
+                        print(f"[AUDIO] Кікнув {m.name}")
+                    except Exception as e:
+                        print(f"[AUDIO] Не вдалось кікнути {m.name}: {e}")
+
     # === СОЗДАНИЕ КАНАЛА ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
         guild = member.guild
@@ -2208,36 +2256,6 @@ async def on_ready():
     print(f'Logged in as {bot.user.name}')
     generate_greeting()          # ← add this line
     send_loan_warnings.start()
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    # === GREETING for specific user ===
-    if member.id == YOUR_USER_ID and after.channel and before.channel != after.channel:
-        channel = after.channel
-        vc = None
-        greeted = False
-        try:
-            vc = await channel.connect()
-            audio_source = nextcord.FFmpegPCMAudio(AUDIO_FILE)
-            vc.play(audio_source)
-            while vc.is_playing():
-                await asyncio.sleep(0.5)
-            greeted = True
-            await vc.disconnect()
-        except Exception as e:
-            print(f"Помилка при відтворенні: {e}")
-            if vc and vc.is_connected():
-                await vc.disconnect()
-
-        if not greeted:
-            print("Не вдалось привітати — кікаємо всіх!")
-            for m in list(channel.members):
-                if m.id != YOUR_USER_ID:
-                    try:
-                        await m.move_to(None)
-                        print(f"Кікнув {m.name}")
-                    except Exception as e:
-                        print(f"Не вдалось кікнути {m.name}: {e}")
 
 
 # Устанавливаем кастомную команду help
