@@ -17,6 +17,9 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import pytz
 import re
+import discord
+from discord.ext import commands
+from gtts import gTTS
 
 # Устанавливаем intents
 intents = nextcord.Intents.default()
@@ -2191,6 +2194,70 @@ async def handle_admin_vote(ctx, petition_id: int, vote_type: str):
 
     await ctx.send("Петиция не найдена.", delete_after=10)
 
+
+YOUR_USER_ID = 539475816342487040  # Замінити на свій Discord User ID
+
+AUDIO_FILE = "greeting.mp3"
+
+intents = discord.Intents.default()
+intents.voice_states = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+def generate_greeting():
+    """Генеруємо аудіо привітання якщо файл не існує"""
+    if not os.path.exists(AUDIO_FILE):
+        tts = gTTS("Привіт Юра Яковенко", lang="uk")
+        tts.save(AUDIO_FILE)
+        print(f"Аудіо файл '{AUDIO_FILE}' створено.")
+
+@bot.event
+async def on_ready():
+    print(f"Бот запущений як {bot.user}")
+    generate_greeting()
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    # Тільки коли саме ти заходиш у канал
+    if member.id != YOUR_USER_ID:
+        return
+    if after.channel is None or before.channel == after.channel:
+        return
+
+    channel = after.channel
+    greeted = False
+
+    try:
+        # Бот заходить у той самий канал
+        vc = await channel.connect()
+
+        # Відтворюємо привітання
+        audio_source = discord.FFmpegPCMAudio(AUDIO_FILE)
+        vc.play(audio_source)
+
+        # Чекаємо поки програє
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+
+        greeted = True
+        await vc.disconnect()
+
+    except Exception as e:
+        print(f"Помилка при відтворенні: {e}")
+        if vc and vc.is_connected():
+            await vc.disconnect()
+
+    if not greeted:
+        # Якщо не привіталось — кікаємо всіх крім тебе
+        print("Не вдалось привітати — кікаємо всіх!")
+        for m in list(channel.members):
+            if m.id != YOUR_USER_ID:
+                try:
+                    await m.move_to(None)
+                    print(f"Кікнув {m.name}")
+                except Exception as e:
+                    print(f"Не вдалось кікнути {m.name}: {e}")
 
 
 # Устанавливаем кастомную команду help
