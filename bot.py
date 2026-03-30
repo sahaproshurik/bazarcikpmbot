@@ -13,7 +13,6 @@ from apscheduler.triggers.cron import CronTrigger
 import time
 import pytz
 import re
-from gtts import gTTS
 
 # ============================================================
 #  BOT SETUP
@@ -149,7 +148,19 @@ async def on_message(message):
                 pass
     await bot.process_commands(message)
 
-@bot.command(name="level")
+@bot.command(
+    name="level",
+    brief="Показать уровень и XP",
+    help=(
+        "Показывает текущий уровень, количество XP и прогресс до следующего уровня.\n\n"
+        "XP начисляется автоматически за сообщения (2–8 XP каждые 60 секунд).\n\n"
+        "**Использование:**\n"
+        "`!level` — твой уровень\n"
+        "`!level @user` — уровень другого игрока\n\n"
+        "**Формула:**\n"
+        "XP для уровня N = 100 × N^1.5"
+    )
+)
 async def show_level(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
@@ -178,7 +189,19 @@ def calculate_tax(profit: int) -> int:
 # ============================================================
 #  MONEY COMMANDS
 # ============================================================
-@bot.command(name="money")
+@bot.command(
+    name="money",
+    brief="Проверить баланс",
+    help=(
+        "Показывает твой текущий баланс: наличные, деньги в банке и суммарный капитал.\n\n"
+        "**Использование:**\n"
+        "`!money`\n\n"
+        "**Что отображается:**\n"
+        "💰 Наличные — деньги «на руках» (используются в играх, магазине, переводах)\n"
+        "🏦 Банк — деньги в банке (безопасно хранятся, недоступны для ограблений)\n"
+        "💎 Всего — наличные + банк"
+    )
+)
 async def check_funds(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -192,7 +215,21 @@ async def check_funds(ctx):
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
     await ctx.send(embed=embed)
 
-@bot.command(name="pay")
+@bot.command(
+    name="pay",
+    brief="Перевести деньги другому игроку",
+    help=(
+        "Переводит указанную сумму из твоих наличных другому игроку.\n\n"
+        "**Использование:**\n"
+        "`!pay @user <сумма>`\n\n"
+        "**Пример:**\n"
+        "`!pay @Vasya 5000` — перевести Васе 5000 монет\n\n"
+        "**Ограничения:**\n"
+        "• Сумма должна быть больше 0\n"
+        "• Необходимо иметь достаточно наличных\n"
+        "• Деньги снимаются с наличных (не из банка)"
+    )
+)
 async def pay(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
     sender   = str(ctx.author.id)
@@ -208,7 +245,19 @@ async def pay(ctx, member: discord.Member, amount: int):
     save_funds()
     await ctx.send(f"💸 {ctx.author.mention} перевёл **{amount:,}** 💰 → {member.mention}")
 
-@bot.command(name="deposit")
+@bot.command(
+    name="deposit",
+    brief="Положить деньги в банк",
+    help=(
+        "Переводит наличные деньги на банковский счёт. Деньги в банке защищены от ограблений.\n\n"
+        "**Использование:**\n"
+        "`!deposit <сумма>`\n\n"
+        "**Пример:**\n"
+        "`!deposit 10000` — положить 10 000 монет в банк\n\n"
+        "**Совет:**\n"
+        "Храни большие суммы в банке, чтобы их не украли при ограблении (`!rob`)."
+    )
+)
 async def deposit(ctx, amount: int):
     await ctx.message.delete()
     await init_player(ctx)
@@ -221,7 +270,19 @@ async def deposit(ctx, amount: int):
     save_funds(); save_bank()
     await ctx.send(f"🏦 {ctx.author.mention} внёс **{amount:,}** в банк. Банк: **{player_bank[uid]:,}** 💰")
 
-@bot.command(name="withdraw")
+@bot.command(
+    name="withdraw",
+    brief="Снять деньги из банка",
+    help=(
+        "Снимает деньги с банковского счёта в наличные.\n\n"
+        "**Использование:**\n"
+        "`!withdraw <сумма>`\n\n"
+        "**Пример:**\n"
+        "`!withdraw 5000` — снять 5000 монет из банка\n\n"
+        "**Внимание:**\n"
+        "После снятия деньги становятся наличными и уязвимы для кражи через `!rob`."
+    )
+)
 async def withdraw(ctx, amount: int):
     await ctx.message.delete()
     await init_player(ctx)
@@ -234,7 +295,17 @@ async def withdraw(ctx, amount: int):
     save_funds(); save_bank()
     await ctx.send(f"💰 {ctx.author.mention} снял **{amount:,}** из банка. Наличные: **{player_funds[uid]:,}** 💰")
 
-@bot.command(name="top")
+@bot.command(
+    name="top",
+    brief="Топ-10 богатейших игроков",
+    help=(
+        "Показывает таблицу лидеров: 10 игроков с наибольшим капиталом (наличные + банк).\n\n"
+        "**Использование:**\n"
+        "`!top`\n\n"
+        "**Примечание:**\n"
+        "Учитывается суммарный капитал — и наличные, и банковский счёт."
+    )
+)
 async def leaderboard(ctx):
     await ctx.message.delete()
     combined = {}
@@ -253,7 +324,17 @@ async def leaderboard(ctx):
     embed = discord.Embed(title="💎 Топ-10 богатейших", color=discord.Color.gold(), description="\n".join(lines) or "—")
     await ctx.send(embed=embed)
 
-@bot.command(name="toplevel")
+@bot.command(
+    name="toplevel",
+    brief="Топ-10 игроков по уровню",
+    help=(
+        "Показывает таблицу лидеров: 10 игроков с наибольшим уровнем и количеством XP.\n\n"
+        "**Использование:**\n"
+        "`!toplevel`\n\n"
+        "**Как получить XP:**\n"
+        "Просто пиши сообщения на сервере — каждые 60 секунд начисляется 2–8 XP."
+    )
+)
 async def top_level(ctx):
     await ctx.message.delete()
     top = sorted(player_xp.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -275,7 +356,27 @@ async def top_level(ctx):
 # ============================================================
 DAILY_REWARDS = [500, 750, 1000, 1250, 1500, 2000, 3000]
 
-@bot.command(name="daily")
+@bot.command(
+    name="daily",
+    brief="Получить ежедневный бонус",
+    help=(
+        "Получи ежедневную награду. Чем дольше серия без пропусков — тем больше бонус!\n\n"
+        "**Использование:**\n"
+        "`!daily`\n\n"
+        "**Награды по дням серии:**\n"
+        "День 1: 500 💰\n"
+        "День 2: 750 💰\n"
+        "День 3: 1 000 💰\n"
+        "День 4: 1 250 💰\n"
+        "День 5: 1 500 💰\n"
+        "День 6: 2 000 💰\n"
+        "День 7+: 3 000 💰\n\n"
+        "**Правила:**\n"
+        "• Можно использовать раз в 24 часа\n"
+        "• Если пропустить более 48 часов — серия сбрасывается\n"
+        "• При наличии VIP пропуска (`!buy vip_pass`) бонус увеличивается на 50%"
+    )
+)
 async def daily_bonus(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -292,7 +393,7 @@ async def daily_bonus(ctx):
             m    = r // 60
             await ctx.send(f"⏳ {ctx.author.mention}, следующий бонус через **{h}ч {m}мин**.", delete_after=10)
             return
-        if diff > 172800:  # 2 дня — сброс серии
+        if diff > 172800:
             data["streak"] = 0
 
     streak  = min(data["streak"] + 1, len(DAILY_REWARDS))
@@ -309,7 +410,24 @@ async def daily_bonus(ctx):
 # ============================================================
 ROB_CD: dict = {}
 
-@bot.command(name="rob")
+@bot.command(
+    name="rob",
+    brief="Ограбить другого игрока",
+    help=(
+        "Попытайся ограбить другого игрока и украсть часть его наличных.\n\n"
+        "**Использование:**\n"
+        "`!rob @user`\n\n"
+        "**Механика:**\n"
+        "• Шанс успеха: 45%\n"
+        "• При успехе: украдешь от 100 до 30% наличных жертвы (не более 5 000)\n"
+        "• При провале: заплатишь штраф от 200 до 1 500 монет\n\n"
+        "**Ограничения:**\n"
+        "• Cooldown: 1 час между ограблениями\n"
+        "• Нельзя грабить, если у жертвы меньше 200 наличных\n"
+        "• Если у жертвы есть 🛡 Щит (`!buy shield`) — ограбление заблокируется\n"
+        "• Деньги в банке украсть невозможно — используй `!deposit`!"
+    )
+)
 async def rob(ctx, member: discord.Member):
     await ctx.message.delete()
     await init_player(ctx)
@@ -319,7 +437,6 @@ async def rob(ctx, member: discord.Member):
     if member.id == ctx.author.id:
         await ctx.send("Нельзя ограбить самого себя!", delete_after=5); return
 
-    # Check shield in inventory
     victim_inv = player_inventory.get(victim, {})
     if victim_inv.get("shield", 0) > 0:
         victim_inv["shield"] -= 1
@@ -359,7 +476,25 @@ async def rob(ctx, member: discord.Member):
 # ============================================================
 CRIME_CD: dict = {}
 
-@bot.command(name="crime")
+@bot.command(
+    name="crime",
+    brief="Совершить преступление (заработок/риск)",
+    help=(
+        "Попытайся совершить одно из случайных преступлений и заработать деньги. Есть шанс провала!\n\n"
+        "**Использование:**\n"
+        "`!crime`\n\n"
+        "**Возможные преступления:**\n"
+        "• Карманная кража (награда до 800 / штраф до 200)\n"
+        "• Угон велосипеда (награда до 1 200 / штраф до 300)\n"
+        "• Мошенничество в сети (награда до 2 000 / штраф до 500)\n"
+        "• Кража в магазине (награда до 600 / штраф до 150)\n"
+        "• Незаконная торговля (награда до 5 000 / штраф до 1 000)\n"
+        "• Взлом банкомата (награда до 4 000 / штраф до 800)\n\n"
+        "**Механика:**\n"
+        "• Шанс провала: 40%\n"
+        "• Cooldown: 30 минут"
+    )
+)
 async def crime(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -404,7 +539,24 @@ SHOP_ITEMS = {
     "lottery_ticket": {"name": "🎟 Лотерейный билет", "price": 500, "desc": "Использовать !lotto для розыгрыша"},
 }
 
-@bot.command(name="shop")
+@bot.command(
+    name="shop",
+    brief="Показать магазин предметов",
+    help=(
+        "Открывает каталог магазина со всеми доступными предметами и их ценами.\n\n"
+        "**Использование:**\n"
+        "`!shop`\n\n"
+        "**Предметы в магазине:**\n"
+        "🍀 `lucky_charm` (5 000) — +10% к выигрышу в играх на 1 день\n"
+        "⛏ `pickaxe` (3 000) — +20% к заработку на работе `!gb`\n"
+        "🛡 `shield` (4 000) — защита от одного ограбления `!rob`\n"
+        "⭐ `vip_pass` (50 000) — +50% к ежедневному бонусу на 7 дней\n"
+        "🎣 `fishing_rod` (2 000) — открывает доступ к `!fish`\n"
+        "💣 `bomb` (8 000) — украсть 10–30% наличных у цели\n"
+        "🎟 `lottery_ticket` (500) — участие в лотерее `!lotto`\n\n"
+        "Для покупки используй `!buy <id_предмета>`"
+    )
+)
 async def shop(ctx):
     await ctx.message.delete()
     embed = discord.Embed(title="🏪 Магазин BAZARCIK_PM", color=discord.Color.green())
@@ -416,7 +568,22 @@ async def shop(ctx):
         )
     await ctx.send(embed=embed)
 
-@bot.command(name="buy")
+@bot.command(
+    name="buy",
+    brief="Купить предмет из магазина",
+    help=(
+        "Покупает предмет из магазина за наличные деньги.\n\n"
+        "**Использование:**\n"
+        "`!buy <id_предмета>`\n\n"
+        "**Примеры:**\n"
+        "`!buy shield` — купить щит за 4 000 💰\n"
+        "`!buy fishing_rod` — купить удочку за 2 000 💰\n"
+        "`!buy lottery_ticket` — купить лотерейный билет за 500 💰\n\n"
+        "**ID предметов:**\n"
+        "`lucky_charm`, `pickaxe`, `shield`, `vip_pass`, `fishing_rod`, `bomb`, `lottery_ticket`\n\n"
+        "Посмотри все предметы командой `!shop`"
+    )
+)
 async def buy_shop_item(ctx, item_id: str):
     await ctx.message.delete()
     await init_player(ctx)
@@ -434,7 +601,22 @@ async def buy_shop_item(ctx, item_id: str):
     save_funds(); save_inventory()
     await ctx.send(f"✅ {ctx.author.mention} купил **{item['name']}** за **{price:,}** 💰!")
 
-@bot.command(name="inventory")
+@bot.command(
+    name="inventory",
+    brief="Показать свой инвентарь",
+    help=(
+        "Показывает все предметы в инвентаре указанного игрока (или своём).\n\n"
+        "**Использование:**\n"
+        "`!inventory` — свой инвентарь\n"
+        "`!inventory @user` — инвентарь другого игрока\n\n"
+        "**Как использовать предметы:**\n"
+        "• 💣 Бомба: `!use bomb @user`\n"
+        "• 🎟 Лотерейный билет: `!lotto`\n"
+        "• 🛡 Щит: защищает автоматически при ограблении\n"
+        "• ⛏ Кирка: работает автоматически при `!gb`\n"
+        "• 🎣 Удочка: открывает `!fish`"
+    )
+)
 async def inventory(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
@@ -448,9 +630,21 @@ async def inventory(ctx, member: discord.Member = None):
         embed.add_field(name=SHOP_ITEMS[iid]["name"], value=f"x{qty}", inline=True)
     await ctx.send(embed=embed)
 
-@bot.command(name="use")
+@bot.command(
+    name="use",
+    brief="Использовать предмет из инвентаря",
+    help=(
+        "Использует активный предмет из инвентаря.\n\n"
+        "**Использование:**\n"
+        "`!use bomb @user` — взорвать бомбу рядом с игроком, украв 10–30% его наличных\n"
+        "`!use lottery_ticket` — перенаправит на команду `!lotto`\n\n"
+        "**Примечание:**\n"
+        "• 🛡 Щит срабатывает автоматически при ограблении — использовать вручную не нужно\n"
+        "• ⛏ Кирка применяется автоматически во время работы `!gb`\n"
+        "• 🎣 Удочка открывает команду `!fish` без ручного использования"
+    )
+)
 async def use_item(ctx, item_id: str, member: discord.Member = None):
-    """Использовать предмет из инвентаря."""
     await ctx.message.delete()
     uid = str(ctx.author.id)
     inv = player_inventory.get(uid, {})
@@ -478,10 +672,25 @@ async def use_item(ctx, item_id: str, member: discord.Member = None):
 # ============================================================
 #  LOTTERY
 # ============================================================
-LOTTO_POOL: dict = {}  # guild_id -> {uid: tickets}
-LOTTO_RUNNING: dict = {}  # guild_id -> bool
+LOTTO_POOL: dict = {}
+LOTTO_RUNNING: dict = {}
 
-@bot.command(name="lotto")
+@bot.command(
+    name="lotto",
+    brief="Добавить билет в общую лотерею",
+    help=(
+        "Добавляет лотерейный билет из инвентаря в общий пул розыгрыша.\n\n"
+        "**Использование:**\n"
+        "`!lotto`\n\n"
+        "**Как работает:**\n"
+        "1. Купи билет в магазине: `!buy lottery_ticket` (500 💰)\n"
+        "2. Добавь его в пул: `!lotto`\n"
+        "3. Дождись, пока администратор запустит розыгрыш: `!drawlotto`\n"
+        "4. Победитель определяется случайно — чем больше билетов, тем выше шанс\n\n"
+        "**Приз:** 400 💰 × количество всех билетов в пуле\n\n"
+        "**Пример:** 10 билетов в пуле = приз 4 000 💰"
+    )
+)
 async def lottery(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -505,7 +714,20 @@ async def lottery(ctx):
     total = sum(LOTTO_POOL[gid].values())
     await ctx.send(f"🎟️ {ctx.author.mention} добавил билет в лотерею! Всего билетов: **{total}**. Розыгрыш через `!drawlotto` (только админ).")
 
-@bot.command(name="drawlotto")
+@bot.command(
+    name="drawlotto",
+    brief="[Админ] Провести розыгрыш лотереи",
+    help=(
+        "Проводит розыгрыш среди всех участников, внёсших билеты командой `!lotto`.\n\n"
+        "**Использование:**\n"
+        "`!drawlotto`\n\n"
+        "**Только для администраторов!**\n\n"
+        "**Механика:**\n"
+        "• Каждый участник получает шанс пропорционально количеству своих билетов\n"
+        "• Победитель получает приз: 400 💰 × общее число билетов\n"
+        "• После розыгрыша пул очищается"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def draw_lottery(ctx):
     await ctx.message.delete()
@@ -548,7 +770,26 @@ FISH_TABLE = [
     ("👢 Сапог",       10,  43),
 ]
 
-@bot.command(name="fish")
+@bot.command(
+    name="fish",
+    brief="Порыбачить и заработать деньги",
+    help=(
+        "Забрось удочку и поймай рыбу! Разные уловы приносят разные суммы.\n\n"
+        "**Требование:** наличие 🎣 Удочки в инвентаре (`!buy fishing_rod`)\n\n"
+        "**Использование:**\n"
+        "`!fish`\n\n"
+        "**Возможный улов:**\n"
+        "🐟 Карась — 100 💰 (часто)\n"
+        "🦐 Креветка — 150 💰 (часто)\n"
+        "🐠 Окунь — 200 💰 (средне)\n"
+        "🐡 Фугу — 500 💰 (редко)\n"
+        "🦑 Кальмар — 800 💰 (редко)\n"
+        "🗡 Старый меч — 1 000 💰 (очень редко)\n"
+        "🦈 Акула — 2 000 💰 (очень редко)\n"
+        "👢 Сапог — 10 💰 (нет удачи)\n\n"
+        "**Cooldown:** 5 минут между рыбалками"
+    )
+)
 async def fish(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -573,7 +814,22 @@ async def fish(ctx):
 # ============================================================
 #  PROFILE
 # ============================================================
-@bot.command(name="profile")
+@bot.command(
+    name="profile",
+    brief="Показать профиль игрока",
+    help=(
+        "Отображает полный профиль игрока: уровень, деньги, варны и другую статистику.\n\n"
+        "**Использование:**\n"
+        "`!profile` — свой профиль\n"
+        "`!profile @user` — профиль другого игрока\n\n"
+        "**Что отображается:**\n"
+        "⭐ Уровень и суммарный XP\n"
+        "💰 Наличные и банковский счёт\n"
+        "📦 Показатель Приемер (эффективность на работе)\n"
+        "⚠️ Количество предупреждений (варнов)\n"
+        "📅 Дата вступления на сервер"
+    )
+)
 async def profile(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None:
@@ -619,7 +875,27 @@ def calculate_hand(hand):
         total -= 10; aces -= 1
     return total
 
-@bot.command(name="bj")
+@bot.command(
+    name="bj",
+    brief="Сыграть в Блэкджек",
+    help=(
+        "Классический Блэкджек против дилера. Цель — набрать 21 очко или больше дилера, не перебрав.\n\n"
+        "**Использование:**\n"
+        "`!bj <ставка>`\n\n"
+        "**Пример:**\n"
+        "`!bj 1000` — ставка 1 000 монет\n\n"
+        "**Правила:**\n"
+        "• После раздачи карт выбирай: `!hit` (взять карту) или `!stand` (остановиться)\n"
+        "• Дилер берёт карты до тех пор, пока не наберёт 17+\n"
+        "• Перебор (>21) — проигрыш\n\n"
+        "**Выплаты:**\n"
+        "• Блэкджек с первых карт: ×3 ставки\n"
+        "• Победа над дилером: ×2 ставки\n"
+        "• Ничья: ставка возвращается\n"
+        "• При выигрыше >20 000 взимается налог 18%\n\n"
+        "**Время на ход:** 60 секунд"
+    )
+)
 async def blackjack(ctx, bet: int):
     await ctx.message.delete()
     await init_player_funds(ctx)
@@ -691,7 +967,22 @@ async def blackjack(ctx, bet: int):
 # ============================================================
 #  GAMES: FLIP
 # ============================================================
-@bot.command(name="flip")
+@bot.command(
+    name="flip",
+    brief="Подбросить монетку на ставку",
+    help=(
+        "Классическая игра «орёл или решка». Угадай — удвоишь ставку!\n\n"
+        "**Использование:**\n"
+        "`!flip <ставка> <орел/решка>`\n\n"
+        "**Примеры:**\n"
+        "`!flip 500 о` — ставка 500 монет на орла\n"
+        "`!flip 1000 р` — ставка 1000 монет на решку\n\n"
+        "**Варианты выбора:**\n"
+        "Орёл: `о`, `орел`, `o`, `orel`\n"
+        "Решка: `р`, `решка`, `p`, `reshka`\n\n"
+        "**Выплата при победе:** ×2 ставки (с налогом 18% при выигрыше >20 000)"
+    )
+)
 async def flip(ctx, bet: int, choice: str):
     await ctx.message.delete()
     await init_player_funds(ctx)
@@ -723,7 +1014,22 @@ async def flip(ctx, bet: int, choice: str):
 # ============================================================
 #  GAMES: SLOTS
 # ============================================================
-@bot.command(name="spin")
+@bot.command(
+    name="spin",
+    brief="Сыграть в слоты",
+    help=(
+        "Крути барабаны! Совпади символы и сорви джекпот.\n\n"
+        "**Использование:**\n"
+        "`!spin <ставка>`\n\n"
+        "**Пример:**\n"
+        "`!spin 2000` — ставка 2 000 монет\n\n"
+        "**Выплаты:**\n"
+        "🎰 Три одинаковых символа (ДЖЕКПОТ): ×5 ставки (налог 18% при >20 000)\n"
+        "✨ Два одинаковых символа: ×2 ставки\n"
+        "😞 Нет совпадений: проигрыш\n\n"
+        "**Символы:** 🍒 🍋 🍉 🍇 🍊 🍍 💎 7️⃣"
+    )
+)
 async def spin(ctx, bet: int):
     await ctx.message.delete()
     await init_player_funds(ctx)
@@ -756,7 +1062,20 @@ async def spin(ctx, bet: int):
 # ============================================================
 #  GAMES: DICE
 # ============================================================
-@bot.command(name="dice")
+@bot.command(
+    name="dice",
+    brief="Угадать число на кубике",
+    help=(
+        "Брось кубик и угадай, какое число выпадет. Угадаешь — выиграешь ×5!\n\n"
+        "**Использование:**\n"
+        "`!dice <ставка> <число 1-6>`\n\n"
+        "**Примеры:**\n"
+        "`!dice 500 3` — ставка 500, загадал число 3\n"
+        "`!dice 1000 6` — ставка 1000, загадал число 6\n\n"
+        "**Выплата при победе:** ×5 ставки\n"
+        "**Шанс выигрыша:** 1 из 6 (~16.7%)"
+    )
+)
 async def dice_game(ctx, bet: int, number: int):
     await ctx.message.delete()
     await init_player_funds(ctx)
@@ -785,9 +1104,29 @@ async def dice_game(ctx, bet: int, number: int):
 # ============================================================
 REDS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 
-@bot.command(name="roulette")
+@bot.command(
+    name="roulette",
+    brief="Сыграть в рулетку",
+    help=(
+        "Поставь на цвет или число в рулетке. Чем рискованнее ставка — тем больше выигрыш!\n\n"
+        "**Использование:**\n"
+        "`!roulette <ставка> <выбор>`\n\n"
+        "**Варианты ставок:**\n"
+        "`red` — на красный (×2 при победе)\n"
+        "`black` — на чёрный (×2 при победе)\n"
+        "`green` — на зелёный/0 (×14 при победе)\n"
+        "`<число 0-36>` — на конкретное число (×35 при победе)\n\n"
+        "**Примеры:**\n"
+        "`!roulette 1000 red` — ставка 1000 на красный\n"
+        "`!roulette 500 17` — ставка 500 на число 17\n"
+        "`!roulette 200 green` — ставка 200 на зелёный (число 0)\n\n"
+        "**Шансы:**\n"
+        "Красный/Чёрный: 18/37 (~48.6%)\n"
+        "Зелёный: 1/37 (~2.7%)\n"
+        "Конкретное число: 1/37 (~2.7%)"
+    )
+)
 async def roulette(ctx, bet: int, choice: str):
-    """!roulette <ставка> <red/black/green/0-36>"""
     await ctx.message.delete()
     await init_player_funds(ctx)
     uid = str(ctx.author.id)
@@ -885,7 +1224,6 @@ class PickingView(View):
             self._picking = False
             await self._switch_to_finish(interaction); return
 
-        # Случайная ошибка телефона
         if random.random() < 0.03:
             self.pick_btn.disabled = True
             wait = random.randint(30, 180)
@@ -953,7 +1291,6 @@ class PickingView(View):
         elif pm < 120: earnings = random.randint(20_000, 50_000)
         else:          earnings = random.randint(50_000, 100_000)
 
-        # Pickaxe bonus
         if player_inventory.get(uid, {}).get("pickaxe", 0) > 0:
             earnings = int(earnings * 1.2)
 
@@ -1088,7 +1425,32 @@ class PackingView(View):
         await interaction.message.edit(content=f"{interaction.user.mention}, вы вышли с работы.", view=None)
 
 # ---- GB command ----
-@bot.command(name="gb")
+@bot.command(
+    name="gb",
+    brief="Пойти работать на склад",
+    help=(
+        "Начни рабочую смену на складе GymBeam. Случайно попадёшь на один из двух видов работы.\n\n"
+        "**Использование:**\n"
+        "`!gb`\n\n"
+        "**Виды работы:**\n\n"
+        "📦 **Пикинг** — сбор товаров по складу:\n"
+        "• Нажимай кнопку **Skenovat' produkt** для сканирования позиций\n"
+        "• Собери все позиции из пикап-листа\n"
+        "• Нажми **Odoslat' objednavku** для отправки заказа\n"
+        "• Изредка возникает «ошибка телефона» — просто подожди\n\n"
+        "📦 **Баление** — упаковка товаров:\n"
+        "• Выбери правильный размер коробки (A–E) под количество товаров\n"
+        "• Коробки A: 1–6 товаров, B: 7–12, C: 13–18, D: 19–24, E: 25–30\n"
+        "• Нажимай **Собрать товар** до завершения\n\n"
+        "**Заработок зависит от Приемера (`!priemer`):**\n"
+        "Приемер < 60: 50 — 10 000 💰\n"
+        "Приемер 60–79: 10 000 — 20 000 💰\n"
+        "Приемер 80–119: 20 000 — 50 000 💰\n"
+        "Приемер 120+: 50 000 — 100 000 💰\n\n"
+        "**Бонус:** ⛏ Кирка (`!buy pickaxe`) даёт +20% к заработку\n"
+        "**Налог:** 7% (до 47 000) или 19% (свыше 47 000)"
+    )
+)
 async def start_job(ctx):
     await ctx.message.delete()
     await init_player(ctx)
@@ -1118,7 +1480,24 @@ async def start_job(ctx):
             view=view)
         ORDER_MESSAGES[uid] = msg.id
 
-@bot.command(name="priemer")
+@bot.command(
+    name="priemer",
+    brief="Посмотреть показатель эффективности работы",
+    help=(
+        "Показывает твой текущий Приемер — показатель эффективности на работе в GymBeam.\n\n"
+        "**Использование:**\n"
+        "`!priemer`\n\n"
+        "**Что такое Приемер:**\n"
+        "Это показатель продуктивности (0–150), который влияет на твой заработок при работе `!gb`.\n\n"
+        "**Статусы:**\n"
+        "🔴 Низкий (0–59): заработок 50 — 10 000 💰\n"
+        "🟡 Средний (60–79): заработок 10 000 — 20 000 💰\n"
+        "🟢 Высокий (80–119): заработок 20 000 — 50 000 💰\n"
+        "💎 Максимум (120–150): заработок 50 000 — 100 000 💰\n\n"
+        "**Как повышается:**\n"
+        "Приемер растёт автоматически при выполнении заказов. Если долго не работать — постепенно снижается."
+    )
+)
 async def priemer_cmd(ctx):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1132,7 +1511,6 @@ async def priemer_cmd(ctx):
     embed.add_field(name="Статус", value=lv)
     await ctx.send(embed=embed)
 
-# Priemer background updater
 async def update_priemer():
     decay_counter = 0
     while True:
@@ -1200,7 +1578,28 @@ def _apply_biz_unique(uid: str, btype: str) -> str:
     apply_server_effect(item["effect"], item["duration"])
     return f"🛠 **{item['item_name']}** применён! {item['description']}"
 
-@bot.command(name="buy_business")
+@bot.command(
+    name="buy_business",
+    brief="Купить бизнес",
+    help=(
+        "Покупает новый бизнес указанного типа с заданным названием.\n\n"
+        "**Использование:**\n"
+        '`!buy_business "Тип бизнеса" Моё название`\n\n'
+        "**Доступные типы:**\n"
+        "• `Киоск с едой` — 200 💰, прибыль 20/день\n"
+        "• `Автомойка` — 300 💰, прибыль 25/день\n"
+        "• `Лотерейный магазин` — 400 💰, прибыль 30/день\n"
+        "• `Офис IT-услуг` — 500 💰, прибыль 40/день\n"
+        "• `Фитнес-клуб` — 350 💰, прибыль 28/день\n\n"
+        "**Примеры:**\n"
+        '`!buy_business Автомойка МойАвто`\n\n'
+        "**Ограничения:**\n"
+        "• Максимум 3 бизнеса на игрока\n"
+        "• 2-й бизнес стоит ×5 от базовой цены, 3-й — ×10\n"
+        "• Название должно быть уникальным среди твоих бизнесов\n\n"
+        "Прибыль выплачивается ежедневно в 20:00 UTC. Подробнее: `!business_info`"
+    )
+)
 async def buy_business(ctx, business_name: str, *, custom_name: str):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1235,7 +1634,22 @@ async def buy_business(ctx, business_name: str, *, custom_name: str):
     save_funds(); save_businesses()
     await ctx.send(f"✅ Бизнес **{custom_name}** ({business_name}) куплен за **{cost:,}** 💰!")
 
-@bot.command(name="sell_business")
+@bot.command(
+    name="sell_business",
+    brief="Продать свой бизнес",
+    help=(
+        "Продаёт один из твоих бизнесов за 70% от базовой стоимости.\n\n"
+        "**Использование:**\n"
+        "`!sell_business <название>`\n\n"
+        "**Пример:**\n"
+        "`!sell_business МойКиоск`\n\n"
+        "**Важно:**\n"
+        "• Продажа необратима — бизнес будет удалён\n"
+        "• Выплачивается 70% от базовой цены типа бизнеса (не от потраченного)\n"
+        "• Улучшения и вложения в апгрейды не компенсируются\n\n"
+        "Посмотреть свои бизнесы: `!businesses`"
+    )
+)
 async def sell_business_cmd(ctx, *, business_name: str):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1251,7 +1665,23 @@ async def sell_business_cmd(ctx, *, business_name: str):
 
     await ctx.send("❌ Бизнес не найден.", delete_after=5)
 
-@bot.command(name="upgrade_business")
+@bot.command(
+    name="upgrade_business",
+    brief="Улучшить бизнес для роста прибыли",
+    help=(
+        "Улучшает бизнес, увеличивая ежедневную прибыль.\n\n"
+        "**Использование:**\n"
+        "`!upgrade_business <название>`\n\n"
+        "**Пример:**\n"
+        "`!upgrade_business МояАвтомойка`\n\n"
+        "**Механика:**\n"
+        "• Стоимость каждого следующего улучшения возрастает в 1.5 раза\n"
+        "• Прибыль после улучшения: базовая × (2 - 0.2 × номер улучшения), минимум ×1.2\n"
+        "• С шансом 10% при улучшении активируется уникальный серверный эффект типа бизнеса\n\n"
+        "**Ограничение:**\n"
+        "Улучшать можно не чаще 1 раза в сутки (24 часа)"
+    )
+)
 async def upgrade_business_cmd(ctx, *, business_name: str):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1282,7 +1712,24 @@ async def upgrade_business_cmd(ctx, *, business_name: str):
 
     await ctx.send("❌ Бизнес не найден.", delete_after=5)
 
-@bot.command(name="repair_business")
+@bot.command(
+    name="repair_business",
+    brief="Отремонтировать бизнес",
+    help=(
+        "Ремонтирует бизнес, оплачивая стоимость технического обслуживания.\n\n"
+        "**Использование:**\n"
+        "`!repair_business <название>`\n\n"
+        "**Пример:**\n"
+        "`!repair_business МойКиоск`\n\n"
+        "**Стоимость ремонта:**\n"
+        "• Киоск с едой: 40 💰\n"
+        "• Автомойка: 75 💰\n"
+        "• Лотерейный магазин: 120 💰\n"
+        "• Офис IT-услуг: 175 💰\n"
+        "• Фитнес-клуб: ~52 💰\n\n"
+        "(Считается как base_cost × repair_cost бизнеса)"
+    )
+)
 async def repair_business_cmd(ctx, *, business_name: str):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1299,7 +1746,21 @@ async def repair_business_cmd(ctx, *, business_name: str):
 
     await ctx.send("❌ Бизнес не найден.", delete_after=5)
 
-@bot.command(name="businesses")
+@bot.command(
+    name="businesses",
+    brief="Список своих бизнесов",
+    help=(
+        "Показывает все бизнесы указанного игрока (или свои).\n\n"
+        "**Использование:**\n"
+        "`!businesses` — свои бизнесы\n"
+        "`!businesses @user` — бизнесы другого игрока\n\n"
+        "**Отображается:**\n"
+        "• Название и тип бизнеса\n"
+        "• Ежедневная прибыль\n"
+        "• Статус (обычный / улучшенный)\n"
+        "• Количество улучшений"
+    )
+)
 async def list_businesses(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
@@ -1318,7 +1779,21 @@ async def list_businesses(ctx, member: discord.Member = None):
             inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="business_info")
+@bot.command(
+    name="business_info",
+    brief="Информация о типах бизнесов",
+    help=(
+        "Показывает таблицу со всеми доступными типами бизнесов и их характеристиками.\n\n"
+        "**Использование:**\n"
+        "`!business_info`\n\n"
+        "**Отображается для каждого типа:**\n"
+        "• Базовая стоимость покупки\n"
+        "• Ежедневная прибыль\n"
+        "• Ежедневный налог\n"
+        "• Стоимость первого улучшения\n\n"
+        "Подробный гайд по командам: `!business_help`"
+    )
+)
 async def business_info_cmd(ctx):
     await ctx.message.delete()
     embed = discord.Embed(title="📋 Типы бизнесов", color=discord.Color.blue())
@@ -1331,13 +1806,42 @@ async def business_info_cmd(ctx):
             inline=True)
     await ctx.send(embed=embed)
 
-@bot.command(name="use_item")
+@bot.command(
+    name="use_item",
+    brief="Применить уникальный эффект бизнеса",
+    help=(
+        "Применяет уникальный серверный эффект для указанного типа бизнеса.\n\n"
+        "**Использование:**\n"
+        "`!use_item <тип бизнеса>`\n\n"
+        "**Примеры:**\n"
+        "`!use_item Автомойка` — активирует Промо-карты (×2 прибыль на 1 час)\n"
+        "`!use_item Офис IT-услуг` — активирует Виртуальный сервер\n\n"
+        "**Эффекты по типам:**\n"
+        "• Киоск с едой → Фирменный фургон (+10% скорость, 24ч)\n"
+        "• Автомойка → Промо-карты (×2 прибыль, 1ч)\n"
+        "• Лотерейный магазин → Золотой билет (+10% шанс редких предметов, 24ч)\n"
+        "• Офис IT-услуг → Виртуальный сервер (улучшения ×1.2 быстрее, 24ч)\n"
+        "• Фитнес-клуб → Персональный тренер (+10% событий, 24ч)"
+    )
+)
 async def use_item_biz_cmd(ctx, *, business_type: str):
     await ctx.message.delete()
     uid = str(ctx.author.id)
     await ctx.send(_apply_biz_unique(uid, business_type))
 
-@bot.command(name="active_effects")
+@bot.command(
+    name="active_effects",
+    brief="Посмотреть активные серверные эффекты",
+    help=(
+        "Показывает все активные на данный момент серверные эффекты от бизнесов.\n\n"
+        "**Использование:**\n"
+        "`!active_effects`\n\n"
+        "**Эффекты активируются:**\n"
+        "• При улучшении бизнеса (10% шанс)\n"
+        "• Через команду `!use_item <тип бизнеса>`\n\n"
+        "Для каждого эффекта показывается время истечения в UTC."
+    )
+)
 async def active_effects_cmd(ctx):
     await ctx.message.delete()
     check_active_effects()
@@ -1349,7 +1853,20 @@ async def active_effects_cmd(ctx):
         embed.add_field(name=eff, value=f"До: {dt}", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="business_help")
+@bot.command(
+    name="business_help",
+    brief="Гайд по системе бизнесов",
+    help=(
+        "Показывает подробный гайд по всем командам системы бизнесов.\n\n"
+        "**Использование:**\n"
+        "`!business_help`\n\n"
+        "**Включает:**\n"
+        "• Список всех команд бизнеса\n"
+        "• Краткое описание каждой команды\n"
+        "• Советы по развитию бизнеса\n\n"
+        "Для просмотра типов и цен используй `!business_info`"
+    )
+)
 async def business_help_cmd(ctx):
     await ctx.message.delete()
     try:
@@ -1370,7 +1887,6 @@ async def business_help_cmd(ctx):
             embed.add_field(name=f"`{cmd}`", value=desc, inline=False)
         await ctx.send(embed=embed)
 
-# Background tasks for businesses
 @tasks.loop(hours=1)
 async def daily_business_income():
     if datetime.now(timezone.utc).hour == 20:
@@ -1441,7 +1957,28 @@ def get_loan_rate(age): return 0.15 if age > 120 else 0.20
 
 def calc_daily_payment(amount, term, rate): return int(amount * (1 + rate) / term)
 
-@bot.command(name="applyloan")
+@bot.command(
+    name="applyloan",
+    brief="Оформить кредит",
+    help=(
+        "Оформляет кредит на указанную сумму и срок. Деньги сразу поступают на наличные.\n\n"
+        "**Использование:**\n"
+        "`!applyloan <сумма> <срок в днях>`\n\n"
+        "**Примеры:**\n"
+        "`!applyloan 50000 7` — кредит 50 000 на 7 дней\n"
+        "`!applyloan 10000 3` — кредит 10 000 на 3 дня\n\n"
+        "**Условия по стажу на сервере:**\n"
+        "< 30 дней: кредиты недоступны\n"
+        "30–59 дней: до 100 000 💰 (ставка 20%)\n"
+        "60–89 дней: до 300 000 💰 (ставка 20%)\n"
+        "90–119 дней: до 500 000 💰 (ставка 20%)\n"
+        "120+ дней: до 1 000 000 💰 (ставка 15%)\n\n"
+        "**Срок:** от 1 до 7 дней\n"
+        "**Просрочка:** долг удваивается, срок продлевается на 2 дня\n"
+        "**Только один активный кредит одновременно**\n\n"
+        "Рассчитать платёж заранее: `!calculatecredit`"
+    )
+)
 async def applyloan(ctx, loan_amount: int, loan_term: int):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1481,7 +2018,19 @@ async def applyloan(ctx, loan_amount: int, loan_term: int):
     embed.add_field(name="Баланс",   value=f"{player_funds[uid]:,} 💰")
     await ctx.send(ctx.author.mention, embed=embed)
 
-@bot.command(name="calculatecredit")
+@bot.command(
+    name="calculatecredit",
+    brief="Рассчитать кредит до оформления",
+    help=(
+        "Рассчитывает условия кредита — сумму переплаты и ежедневный платёж — не оформляя его.\n\n"
+        "**Использование:**\n"
+        "`!calculatecredit <сумма> <срок>`\n\n"
+        "**Примеры:**\n"
+        "`!calculatecredit 50000 7` — расчёт кредита 50 000 на 7 дней\n"
+        "`!calculatecredit 10000 3` — расчёт кредита 10 000 на 3 дня\n\n"
+        "Показывает: ставку, итоговую сумму с процентами и ежедневный платёж."
+    )
+)
 async def calc_credit(ctx, loan_amount: int, loan_term: int):
     await ctx.message.delete()
     age   = await get_user_age_on_server(ctx, ctx.author.id) or 0
@@ -1492,7 +2041,23 @@ async def calc_credit(ctx, loan_amount: int, loan_term: int):
         f"📊 Кредит **{loan_amount:,}** на **{loan_term}** дней\n"
         f"Ставка: **{int(rate*100)}%** | Итого: **{total:,}** | Ежедневно: **{daily:,}** 💰")
 
-@bot.command(name="checkloan")
+@bot.command(
+    name="checkloan",
+    brief="Посмотреть статус своего кредита",
+    help=(
+        "Показывает детали активного кредита: остаток, срок, историю оплат.\n\n"
+        "**Использование:**\n"
+        "`!checkloan`\n\n"
+        "**Отображается:**\n"
+        "• Сумма кредита и процентная ставка\n"
+        "• Итоговая сумма к возврату\n"
+        "• Уже оплачено и остаток\n"
+        "• Дата погашения и дней до неё\n\n"
+        "**Просрочка:**\n"
+        "Если срок истёк — долг удвоится и срок продлится на 2 дня автоматически.\n\n"
+        "Погасить кредит: `!payloan <сумма>`"
+    )
+)
 async def check_loan(ctx):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1523,7 +2088,23 @@ async def check_loan(ctx):
     embed.add_field(name="Срок",       value=loan["due_date"])
     await ctx.send(embed=embed)
 
-@bot.command(name="payloan")
+@bot.command(
+    name="payloan",
+    brief="Погасить кредит (частично или полностью)",
+    help=(
+        "Вносит платёж по активному кредиту. Можно платить частями или сразу всё.\n\n"
+        "**Использование:**\n"
+        "`!payloan <сумма>`\n\n"
+        "**Примеры:**\n"
+        "`!payloan 5000` — внести 5 000 в счёт кредита\n"
+        "`!payloan 999999` — погасить весь оставшийся долг\n\n"
+        "**Важно:**\n"
+        "• Деньги снимаются с наличных\n"
+        "• Если указать сумму больше остатка — спишется только нужная сумма\n"
+        "• Кредит закрывается автоматически при полном погашении\n\n"
+        "Проверить остаток: `!checkloan`"
+    )
+)
 async def pay_loan(ctx, amount: int):
     await ctx.message.delete()
     uid = str(ctx.author.id)
@@ -1569,7 +2150,23 @@ async def send_loan_warnings():
 # ============================================================
 #  MODERATION
 # ============================================================
-@bot.command(name="mute")
+@bot.command(
+    name="mute",
+    brief="[Админ] Замутить участника",
+    help=(
+        "Выдаёт мут участнику сервера на указанное количество минут.\n\n"
+        "**Использование:**\n"
+        "`!mute @user <минуты>`\n\n"
+        "**Примеры:**\n"
+        "`!mute @Vasya 30` — мут на 30 минут\n"
+        "`!mute @Vasya 1440` — мут на 24 часа\n\n"
+        "**Механика:**\n"
+        "• Участнику даётся 1 минута предупреждения перед мутом\n"
+        "• Создаётся роль «БАН банан🍌» с запретом писать и говорить\n"
+        "• По истечении времени мут снимается автоматически\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def mute(ctx, member: discord.Member, mute_time: int):
     await ctx.message.delete()
@@ -1586,7 +2183,18 @@ async def mute(ctx, member: discord.Member, mute_time: int):
     await member.remove_roles(role)
     await ctx.send(f"🔊 {member.mention} размучен.")
 
-@bot.command(name="unmute")
+@bot.command(
+    name="unmute",
+    brief="[Админ] Снять мут с участника",
+    help=(
+        "Немедленно снимает мут с участника сервера.\n\n"
+        "**Использование:**\n"
+        "`!unmute @user`\n\n"
+        "**Пример:**\n"
+        "`!unmute @Vasya`\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def unmute(ctx, member: discord.Member):
     await ctx.message.delete()
@@ -1597,7 +2205,23 @@ async def unmute(ctx, member: discord.Member):
     else:
         await ctx.send(f"{member.mention} не замучен.", delete_after=5)
 
-@bot.command(name="ban")
+@bot.command(
+    name="ban",
+    brief="[Админ] Забанить участника",
+    help=(
+        "Банит участника сервера на указанное количество дней, после чего разбанивает автоматически.\n\n"
+        "**Использование:**\n"
+        "`!ban @user <дней>`\n\n"
+        "**Примеры:**\n"
+        "`!ban @Vasya 3` — бан на 3 дня\n"
+        "`!ban @Vasya 1` — бан на 1 день\n\n"
+        "**Механика:**\n"
+        "• Участнику даётся 1 минута предупреждения\n"
+        "• Сообщения за последние 7 дней удаляются\n"
+        "• По истечении срока участник разбанивается автоматически\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def ban(ctx, member: discord.Member, ban_days: int):
     await ctx.message.delete()
@@ -1609,14 +2233,41 @@ async def ban(ctx, member: discord.Member, ban_days: int):
     await ctx.guild.unban(member)
     await ctx.send(f"✅ {member.mention} разбанен.")
 
-@bot.command(name="kick")
+@bot.command(
+    name="kick",
+    brief="[Админ] Кикнуть участника с сервера",
+    help=(
+        "Выгоняет участника с сервера (он сможет вернуться по приглашению).\n\n"
+        "**Использование:**\n"
+        "`!kick @user` — без причины\n"
+        "`!kick @user <причина>` — с указанием причины\n\n"
+        "**Примеры:**\n"
+        "`!kick @Vasya Нарушение правил`\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def kick(ctx, member: discord.Member, *, reason: str = "Не указана"):
     await ctx.message.delete()
     await member.kick(reason=reason)
     await ctx.send(f"👢 {member.mention} выгнан. Причина: **{reason}**")
 
-@bot.command(name="warn")
+@bot.command(
+    name="warn",
+    brief="[Админ] Выдать предупреждение участнику",
+    help=(
+        "Выдаёт предупреждение (варн) участнику сервера. Участник получит уведомление в ЛС.\n\n"
+        "**Использование:**\n"
+        "`!warn @user` — без причины\n"
+        "`!warn @user <причина>` — с причиной\n\n"
+        "**Примеры:**\n"
+        "`!warn @Vasya Спам в чате`\n"
+        "`!warn @Vasya`\n\n"
+        "**Только для администраторов!**\n\n"
+        "Посмотреть варны: `!warns @user`\n"
+        "Снять варны: `!clearwarn @user`"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def warn_member(ctx, member: discord.Member, *, reason: str = "Не указана"):
     await ctx.message.delete()
@@ -1629,7 +2280,17 @@ async def warn_member(ctx, member: discord.Member, *, reason: str = "Не ука
     try: await member.send(f"⚠️ Вы получили предупреждение на **{ctx.guild.name}**.\nПричина: {reason}\nВарн #{count}")
     except Exception: pass
 
-@bot.command(name="warns")
+@bot.command(
+    name="warns",
+    brief="Посмотреть предупреждения игрока",
+    help=(
+        "Показывает список всех предупреждений (варнов) указанного участника.\n\n"
+        "**Использование:**\n"
+        "`!warns` — свои варны\n"
+        "`!warns @user` — варны другого участника\n\n"
+        "Отображаются последние 10 предупреждений с датой и причиной."
+    )
+)
 async def check_warns(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
@@ -1643,7 +2304,16 @@ async def check_warns(ctx, member: discord.Member = None):
             embed.add_field(name=f"#{i}", value=f"{w['reason']} ({w['date']})", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="clearwarn")
+@bot.command(
+    name="clearwarn",
+    brief="[Админ] Снять все варны с участника",
+    help=(
+        "Полностью очищает историю предупреждений указанного участника.\n\n"
+        "**Использование:**\n"
+        "`!clearwarn @user`\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def clear_warns(ctx, member: discord.Member):
     await ctx.message.delete()
@@ -1652,7 +2322,20 @@ async def clear_warns(ctx, member: discord.Member):
     save_warns()
     await ctx.send(f"✅ Все предупреждения {member.mention} сброшены.")
 
-@bot.command(name="clear")
+@bot.command(
+    name="clear",
+    brief="[Админ] Удалить сообщения в канале",
+    help=(
+        "Удаляет указанное количество последних сообщений в текущем канале.\n\n"
+        "**Использование:**\n"
+        "`!clear <количество>`\n\n"
+        "**Примеры:**\n"
+        "`!clear 10` — удалить 10 последних сообщений\n"
+        "`!clear 100` — удалить 100 сообщений (максимум)\n\n"
+        "**Ограничение:** от 1 до 100 сообщений за раз\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def clear_messages(ctx, amount: int):
     await ctx.message.delete()
@@ -1662,7 +2345,19 @@ async def clear_messages(ctx, amount: int):
     msg = await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений.")
     await asyncio.sleep(3); await msg.delete()
 
-@bot.command(name="clearday")
+@bot.command(
+    name="clearday",
+    brief="[Админ] Удалить сообщения за N дней",
+    help=(
+        "Удаляет все сообщения в канале за указанное количество последних дней.\n\n"
+        "**Использование:**\n"
+        "`!clearday <дней>`\n\n"
+        "**Примеры:**\n"
+        "`!clearday 1` — удалить сообщения за последние сутки\n"
+        "`!clearday 7` — удалить сообщения за последнюю неделю\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def clearday(ctx, days: int):
     await ctx.message.delete()
@@ -1673,7 +2368,18 @@ async def clearday(ctx, days: int):
     msg = await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений за {days} дней.")
     await asyncio.sleep(3); await msg.delete()
 
-@bot.command(name="clearuser")
+@bot.command(
+    name="clearuser",
+    brief="[Админ] Удалить сообщения конкретного участника",
+    help=(
+        "Удаляет последние N сообщений указанного участника в текущем канале.\n\n"
+        "**Использование:**\n"
+        "`!clearuser @user <количество>`\n\n"
+        "**Примеры:**\n"
+        "`!clearuser @Vasya 50` — удалить 50 последних сообщений Васи\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def clearuser(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
@@ -1682,7 +2388,18 @@ async def clearuser(ctx, member: discord.Member, amount: int):
     deleted = await ctx.channel.purge(limit=amount, check=lambda m: m.author == member)
     await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений от {member.mention}.", delete_after=5)
 
-@bot.command(name="clearuserday")
+@bot.command(
+    name="clearuserday",
+    brief="[Админ] Удалить сообщения участника за N дней",
+    help=(
+        "Удаляет все сообщения указанного участника за последние N дней в текущем канале.\n\n"
+        "**Использование:**\n"
+        "`!clearuserday @user <дней>`\n\n"
+        "**Примеры:**\n"
+        "`!clearuserday @Vasya 3` — удалить сообщения Васи за 3 дня\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def clearuserdays(ctx, member: discord.Member, days: int):
     await ctx.message.delete()
@@ -1698,7 +2415,21 @@ async def clearuserdays(ctx, member: discord.Member, days: int):
 # ============================================================
 #  INFO COMMANDS
 # ============================================================
-@bot.command(name="userinfo")
+@bot.command(
+    name="userinfo",
+    brief="Информация об участнике сервера",
+    help=(
+        "Показывает подробную информацию об участнике сервера.\n\n"
+        "**Использование:**\n"
+        "`!userinfo` — о себе\n"
+        "`!userinfo @user` — о другом участнике\n\n"
+        "**Отображается:**\n"
+        "• Отображаемое имя и ID\n"
+        "• Дата вступления на сервер\n"
+        "• Дата создания аккаунта Discord\n"
+        "• Список ролей участника"
+    )
+)
 async def user_info(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
@@ -1711,7 +2442,19 @@ async def user_info(ctx, member: discord.Member = None):
     embed.add_field(name="Роли",          value=", ".join(r.mention for r in member.roles[1:]) or "—")
     await ctx.send(embed=embed)
 
-@bot.command(name="serverinfo")
+@bot.command(
+    name="serverinfo",
+    brief="Информация о сервере",
+    help=(
+        "Показывает общую информацию о текущем сервере.\n\n"
+        "**Использование:**\n"
+        "`!serverinfo`\n\n"
+        "**Отображается:**\n"
+        "• Название и ID сервера\n"
+        "• Дата создания\n"
+        "• Количество участников, каналов, ролей и эмодзи"
+    )
+)
 async def server_info(ctx):
     await ctx.message.delete()
     g     = ctx.guild
@@ -1725,7 +2468,16 @@ async def server_info(ctx):
     if g.icon: embed.set_thumbnail(url=g.icon.url)
     await ctx.send(embed=embed)
 
-@bot.command(name="moneyhelp")
+@bot.command(
+    name="moneyhelp",
+    brief="Гайд по денежной системе",
+    help=(
+        "Показывает список всех команд экономической системы с кратким описанием.\n\n"
+        "**Использование:**\n"
+        "`!moneyhelp`\n\n"
+        "Также используй `!help <команда>` для подробного описания любой команды."
+    )
+)
 async def moneyhelp(ctx):
     await ctx.message.delete()
     try:
@@ -1756,27 +2508,77 @@ async def moneyhelp(ctx):
 # ============================================================
 #  FUN COMMANDS
 # ============================================================
-@bot.command(name="joke", aliases=["randomjoke","jokes"])
+@bot.command(
+    name="joke",
+    aliases=["randomjoke","jokes"],
+    brief="Случайная шутка",
+    help=(
+        "Отправляет случайную шутку из базы данных бота.\n\n"
+        "**Использование:**\n"
+        "`!joke`\n\n"
+        "**Псевдонимы:** `!randomjoke`, `!jokes`"
+    )
+)
 async def tell_joke(ctx):
     await ctx.message.delete()
     await ctx.send(f"{ctx.author.mention} {random.choice(jokes)}")
 
-@bot.command(name="predict", aliases=["fortune","prophecy"])
+@bot.command(
+    name="predict",
+    aliases=["fortune","prophecy"],
+    brief="Случайное предсказание",
+    help=(
+        "Выдаёт случайное предсказание или предзнаменование.\n\n"
+        "**Использование:**\n"
+        "`!predict`\n\n"
+        "**Псевдонимы:** `!fortune`, `!prophecy`"
+    )
+)
 async def tell_prediction(ctx):
     await ctx.message.delete()
     await ctx.send(f"{ctx.author.mention} {random.choice(predictions)}")
 
-@bot.command(name="greet")
+@bot.command(
+    name="greet",
+    brief="Поприветствовать участника",
+    help=(
+        "Отправляет приветствие от бота указанному участнику.\n\n"
+        "**Использование:**\n"
+        "`!greet @user`\n\n"
+        "**Пример:**\n"
+        "`!greet @Vasya`"
+    )
+)
 async def greet_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"Привет {member.mention} от бота базарчик пм")
 
-@bot.command(name="pick")
+@bot.command(
+    name="pick",
+    brief="Позвать участника на сервер",
+    help=(
+        "Отправляет участнику «приглашение» зайти на сервер в шуточной форме.\n\n"
+        "**Использование:**\n"
+        "`!pick @user`\n\n"
+        "**Пример:**\n"
+        "`!pick @Vasya`"
+    )
+)
 async def pick_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"{member.mention} а ну быстро зашол ато банчик")
 
-@bot.command(name="z")
+@bot.command(
+    name="z",
+    brief="Напомнить об украинском языке",
+    help=(
+        "Отправляет мотивирующее сообщение о важности украинского языка.\n\n"
+        "**Использование:**\n"
+        "`!z @user`\n\n"
+        "**Пример:**\n"
+        "`!z @Vasya`"
+    )
+)
 async def z_user(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(
@@ -1790,13 +2592,37 @@ async def z_user(ctx, member: discord.Member):
         f"Будь воїном слова, і нехай більше жоден московський звук не торкнеться твого вуст!"
     )
 
-@bot.command(name="random")
+@bot.command(
+    name="random",
+    brief="Случайный «невезучий» игрок дня",
+    help=(
+        "Случайно выбирает одного из фиксированного списка игроков, которому «не повезло» сегодня.\n\n"
+        "**Использование:**\n"
+        "`!random`\n\n"
+        "Список участников: NIKUSA, REOSTISLAV, TANCHIK, STROLEKOFK"
+    )
+)
 async def fortune_random(ctx):
     await ctx.message.delete()
     fortune_list = ["Игрок NIKUSA","Игрок REOSTISLAV","Игрок TANCHIK","Игрок STROLEKOFK"]
     await ctx.send(f"🎉 Сегодня удача не на стороне: **{random.choice(fortune_list)}**!")
 
-@bot.command(name="8ball")
+@bot.command(
+    name="8ball",
+    brief="Магический шар — ответ на любой вопрос",
+    help=(
+        "Задай вопрос магическому шару и получи пророческий ответ!\n\n"
+        "**Использование:**\n"
+        "`!8ball <вопрос>`\n\n"
+        "**Примеры:**\n"
+        "`!8ball Я разбогатею?`\n"
+        "`!8ball Стоит ли ставить всё на рулетку?`\n\n"
+        "**Типы ответов:**\n"
+        "✅ Положительные (5 вариантов)\n"
+        "🤔 Нейтральные (3 варианта)\n"
+        "❌ Отрицательные (4 варианта)"
+    )
+)
 async def magic_8ball(ctx, *, question: str = None):
     await ctx.message.delete()
     if not question:
@@ -1813,7 +2639,19 @@ async def magic_8ball(ctx, *, question: str = None):
     embed.add_field(name="🎱 Ответ",  value=random.choice(answers), inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name="rate")
+@bot.command(
+    name="rate",
+    brief="Оценить что-либо по шкале 0-100",
+    help=(
+        "Бот случайно оценивает любую вещь, человека или идею по шкале от 0 до 100.\n\n"
+        "**Использование:**\n"
+        "`!rate <что угодно>`\n\n"
+        "**Примеры:**\n"
+        "`!rate моя удача`\n"
+        "`!rate @Vasya`\n"
+        "`!rate сервер BAZARCIK_PM`"
+    )
+)
 async def rate_something(ctx, *, thing: str = None):
     await ctx.message.delete()
     if not thing:
@@ -1823,13 +2661,34 @@ async def rate_something(ctx, *, thing: str = None):
     bar      = "█" * bar_fill + "░" * (20 - bar_fill)
     await ctx.send(f"⭐ **{thing}**\n`[{bar}]` **{score}/100**")
 
-@bot.command(name="coinflip", aliases=["cf"])
+@bot.command(
+    name="coinflip",
+    aliases=["cf"],
+    brief="Подбросить монетку (без ставки)",
+    help=(
+        "Подбрасывает монетку просто так, без ставок.\n\n"
+        "**Использование:**\n"
+        "`!coinflip`\n"
+        "`!cf`\n\n"
+        "Для игры на деньги используй `!flip <ставка> <орел/решка>`"
+    )
+)
 async def coinflip(ctx):
     await ctx.message.delete()
     result = random.choice(["🦅 Орёл", "🍀 Решка"])
     await ctx.send(f"🪙 {ctx.author.mention} бросил монетку — **{result}**!")
 
-@bot.command(name="hug")
+@bot.command(
+    name="hug",
+    brief="Обнять участника",
+    help=(
+        "Отправляет тёплое объятие выбранному участнику сервера.\n\n"
+        "**Использование:**\n"
+        "`!hug @user`\n\n"
+        "**Пример:**\n"
+        "`!hug @Vasya`"
+    )
+)
 async def hug(ctx, member: discord.Member):
     await ctx.message.delete()
     msgs = [
@@ -1839,17 +2698,46 @@ async def hug(ctx, member: discord.Member):
     ]
     await ctx.send(random.choice(msgs))
 
-@bot.command(name="slap")
+@bot.command(
+    name="slap",
+    brief="Дать пощёчину участнику",
+    help=(
+        "Даёт шуточную пощёчину выбранному участнику.\n\n"
+        "**Использование:**\n"
+        "`!slap @user`\n\n"
+        "**Пример:**\n"
+        "`!slap @Vasya`"
+    )
+)
 async def slap(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"👋 {ctx.author.mention} дал пощёчину {member.mention}!")
 
-@bot.command(name="kiss")
+@bot.command(
+    name="kiss",
+    brief="Поцеловать участника",
+    help=(
+        "Посылает воздушный поцелуй выбранному участнику.\n\n"
+        "**Использование:**\n"
+        "`!kiss @user`\n\n"
+        "**Пример:**\n"
+        "`!kiss @Vasya`"
+    )
+)
 async def kiss(ctx, member: discord.Member):
     await ctx.message.delete()
     await ctx.send(f"💋 {ctx.author.mention} поцеловал {member.mention}!")
 
-@bot.command(name="avatar")
+@bot.command(
+    name="avatar",
+    brief="Показать аватар участника",
+    help=(
+        "Показывает аватар в полном размере.\n\n"
+        "**Использование:**\n"
+        "`!avatar` — свой аватар\n"
+        "`!avatar @user` — аватар другого участника"
+    )
+)
 async def get_avatar(ctx, member: discord.Member = None):
     await ctx.message.delete()
     if member is None: member = ctx.author
@@ -1857,20 +2745,57 @@ async def get_avatar(ctx, member: discord.Member = None):
     embed.set_image(url=member.display_avatar.url)
     await ctx.send(embed=embed)
 
-@bot.command(name="say")
+@bot.command(
+    name="say",
+    brief="[Админ] Написать от имени бота",
+    help=(
+        "Заставляет бота написать указанный текст в текущем канале.\n\n"
+        "**Использование:**\n"
+        "`!say <текст>`\n\n"
+        "**Пример:**\n"
+        "`!say Всем привет!`\n\n"
+        "**Только для администраторов!**\n"
+        "Твоё исходное сообщение будет удалено."
+    )
+)
 @commands.has_permissions(administrator=True)
 async def say(ctx, *, text: str):
     await ctx.message.delete()
     await ctx.send(text)
 
-@bot.command(name="embed")
+@bot.command(
+    name="embed",
+    brief="[Админ] Отправить красивый embed",
+    help=(
+        "Отправляет форматированное embed-сообщение с заголовком и текстом.\n\n"
+        "**Использование:**\n"
+        '`!embed "Заголовок" текст сообщения`\n\n'
+        "**Пример:**\n"
+        '`!embed "Важно" Завтра технические работы на сервере!`\n\n'
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def embed_cmd(ctx, title: str, *, text: str):
     await ctx.message.delete()
     embed = discord.Embed(title=title, description=text, color=discord.Color.blurple())
     await ctx.send(embed=embed)
 
-@bot.command(name="announce")
+@bot.command(
+    name="announce",
+    brief="[Админ] Сделать объявление с @here",
+    help=(
+        "Создаёт официальное объявление с пингом @here и красивым оформлением.\n\n"
+        "**Использование:**\n"
+        "`!announce <текст объявления>`\n\n"
+        "**Пример:**\n"
+        "`!announce Сервер будет недоступен с 20:00 до 21:00 по МСК`\n\n"
+        "**Важно:**\n"
+        "• Пингует @here — все онлайн-участники получат уведомление\n"
+        "• В подписи указывается имя администратора\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def announce(ctx, *, text: str):
     await ctx.message.delete()
@@ -1885,7 +2810,18 @@ async def announce(ctx, *, text: str):
 # ============================================================
 #  GIVE MONEY (admin)
 # ============================================================
-@bot.command(name="give")
+@bot.command(
+    name="give",
+    brief="[Админ] Выдать деньги участнику",
+    help=(
+        "Начисляет указанную сумму на наличные счёт участника.\n\n"
+        "**Использование:**\n"
+        "`!give @user <сумма>`\n\n"
+        "**Примеры:**\n"
+        "`!give @Vasya 10000` — выдать Васе 10 000 монет\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def give_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
@@ -1894,7 +2830,18 @@ async def give_money(ctx, member: discord.Member, amount: int):
     save_funds()
     await ctx.send(f"✅ {member.mention} получил **{amount:,}** 💰. Баланс: **{player_funds[uid]:,}**")
 
-@bot.command(name="take")
+@bot.command(
+    name="take",
+    brief="[Админ] Снять деньги с участника",
+    help=(
+        "Снимает указанную сумму с наличного счёта участника (минимум до 0).\n\n"
+        "**Использование:**\n"
+        "`!take @user <сумма>`\n\n"
+        "**Примеры:**\n"
+        "`!take @Vasya 5000` — снять 5 000 монет у Васи\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def take_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
@@ -1903,7 +2850,19 @@ async def take_money(ctx, member: discord.Member, amount: int):
     save_funds()
     await ctx.send(f"✅ У {member.mention} снято **{amount:,}** 💰. Баланс: **{player_funds[uid]:,}**")
 
-@bot.command(name="setmoney")
+@bot.command(
+    name="setmoney",
+    brief="[Админ] Установить баланс участника",
+    help=(
+        "Устанавливает точное значение наличных на счету участника.\n\n"
+        "**Использование:**\n"
+        "`!setmoney @user <сумма>`\n\n"
+        "**Примеры:**\n"
+        "`!setmoney @Vasya 0` — обнулить баланс Васи\n"
+        "`!setmoney @Vasya 100000` — установить 100 000 монет\n\n"
+        "**Только для администраторов!**"
+    )
+)
 @commands.has_permissions(administrator=True)
 async def set_money(ctx, member: discord.Member, amount: int):
     await ctx.message.delete()
@@ -1915,7 +2874,24 @@ async def set_money(ctx, member: discord.Member, amount: int):
 # ============================================================
 #  PETITION SYSTEM
 # ============================================================
-@bot.command(name="petition")
+@bot.command(
+    name="petition",
+    brief="Создать петицию",
+    help=(
+        "Создаёт новую петицию, которую другие участники могут подписать командой `!vote`.\n\n"
+        "**Использование:**\n"
+        "`!petition <текст петиции>`\n\n"
+        "**Пример:**\n"
+        "`!petition Добавить новый игровой канал`\n\n"
+        "**Как работает:**\n"
+        "1. Ты создаёшь петицию с текстом\n"
+        "2. Нужно набрать 10% голосов от числа участников сервера\n"
+        "3. После набора подписей петиция уходит на голосование администраторов\n"
+        "4. 3 администратора голосуют командами `!yes <номер>` / `!no <номер>`\n"
+        "5. Большинством голосов петиция одобряется или отклоняется\n\n"
+        "Посмотреть активные петиции: `!petitions`"
+    )
+)
 async def petition(ctx, *, text: str = None):
     await ctx.message.delete()
     if not text:
@@ -1943,7 +2919,22 @@ async def petition(ctx, *, text: str = None):
     data["message_id"] = msg.id
     with open("petitions.json","w",encoding="utf-8") as f: json.dump(petitions, f, indent=4)
 
-@bot.command(name="vote")
+@bot.command(
+    name="vote",
+    brief="Подписать петицию",
+    help=(
+        "Ставит подпись под активной петицией.\n\n"
+        "**Использование:**\n"
+        "`!vote <номер петиции>`\n\n"
+        "**Примеры:**\n"
+        "`!vote 1` — подписать петицию №1\n"
+        "`!vote 5` — подписать петицию №5\n\n"
+        "**Правила:**\n"
+        "• Каждый участник может подписать петицию только один раз\n"
+        "• После набора нужного числа подписей петиция уходит к администраторам\n\n"
+        "Список петиций: `!petitions`"
+    )
+)
 async def vote_petition(ctx, petition_id: int = None):
     await ctx.message.delete()
     if petition_id is None:
@@ -1976,11 +2967,37 @@ async def vote_petition(ctx, petition_id: int = None):
     except Exception: pass
     await ctx.send("✅ Подпись принята!", delete_after=5)
 
-@bot.command(name="yes")
+@bot.command(
+    name="yes",
+    brief="[Админ] Одобрить петицию",
+    help=(
+        "Голосует «За» по петиции, набравшей достаточно подписей.\n\n"
+        "**Использование:**\n"
+        "`!yes <номер петиции>`\n\n"
+        "**Пример:**\n"
+        "`!yes 1` — проголосовать «За» петицию №1\n\n"
+        "**Только для администраторов!**\n\n"
+        "Для принятия решения нужны голоса 3 администраторов.\n"
+        "Голосовать «Против»: `!no <номер>`"
+    )
+)
 async def yes_petition(ctx, petition_id: int):
     await _handle_admin_vote(ctx, petition_id, "yes")
 
-@bot.command(name="no")
+@bot.command(
+    name="no",
+    brief="[Админ] Отклонить петицию",
+    help=(
+        "Голосует «Против» по петиции, набравшей достаточно подписей.\n\n"
+        "**Использование:**\n"
+        "`!no <номер петиции>`\n\n"
+        "**Пример:**\n"
+        "`!no 1` — проголосовать «Против» петицию №1\n\n"
+        "**Только для администраторов!**\n\n"
+        "Для принятия решения нужны голоса 3 администраторов.\n"
+        "Голосовать «За»: `!yes <номер>`"
+    )
+)
 async def no_petition(ctx, petition_id: int):
     await _handle_admin_vote(ctx, petition_id, "no")
 
@@ -2029,7 +3046,20 @@ async def _handle_admin_vote(ctx, petition_id: int, vote_type: str):
 
     await ctx.send("Петиция не найдена.", delete_after=5)
 
-@bot.command(name="petitions")
+@bot.command(
+    name="petitions",
+    brief="Список активных петиций",
+    help=(
+        "Показывает список всех активных петиций на сервере.\n\n"
+        "**Использование:**\n"
+        "`!petitions`\n\n"
+        "Для каждой петиции показывается:\n"
+        "• Номер и текст (первые 60 символов)\n"
+        "• Текущее количество подписей и необходимое\n\n"
+        "Подписать петицию: `!vote <номер>`\n"
+        "Создать петицию: `!petition <текст>`"
+    )
+)
 async def list_petitions(ctx):
     await ctx.message.delete()
     try:
@@ -2202,46 +3232,242 @@ async def on_voice_state_update(member, before, after):
                 await ch.delete()
             except Exception as e:
                 print(f"[ERROR] delete channel: {e}")
-
 # ============================================================
 #  HELP COMMAND
 # ============================================================
 class MyHelpCommand(commands.HelpCommand):
+
+    # ── Общий !help ──────────────────────────────────────────
     async def send_bot_help(self, mapping):
         ctx = self.context
         try: await ctx.message.delete()
         except Exception: pass
 
+        # Если есть файл help.txt — используем его
         try:
-            with open("help.txt","r",encoding="utf-8") as f:
+            with open("help.txt", "r", encoding="utf-8") as f:
                 help_text = f.read()
-            try: await ctx.author.send(help_text)
-            except discord.Forbidden: await ctx.send(f"{ctx.author.mention}, разреши ЛС!")
+            try:
+                await ctx.author.send(help_text)
+            except discord.Forbidden:
+                await ctx.send(f"{ctx.author.mention}, разреши ЛС!")
             return
         except FileNotFoundError:
             pass
 
-        embed = discord.Embed(title="📖 Помощь — BAZARCIK_PM", color=discord.Color.blurple())
+        # ── Иначе строим embed ──────────────────────────────
         sections = {
-            "💰 Экономика":  "!money !pay !deposit !withdraw !daily !top !toplevel",
-            "🎯 Азарт":      "!rob !crime !fish !lotto !drawlotto",
-            "🎰 Казино":     "!bj !flip !spin !dice !roulette",
-            "🛒 Магазин":    "!shop !buy !inventory !use",
-            "👤 Профиль":    "!profile !level !avatar !userinfo",
-            "🏢 Бизнес":     "!buy_business !sell_business !upgrade_business !repair_business !businesses !business_info",
-            "💳 Кредиты":    "!applyloan !payloan !checkloan !calculatecredit",
-            "📦 Работа":     "!gb !priemer",
-            "📜 Петиции":    "!petition !vote !petitions !yes !no",
-            "🛡️ Модерация":  "!mute !unmute !ban !kick !warn !warns !clear !clearday !clearuser",
-            "🎭 Развлечения":"!joke !predict !8ball !rate !coinflip !hug !slap !kiss !greet !z !random",
-            "ℹ️ Инфо":       "!serverinfo !moneyhelp !business_help !active_effects",
-            "👑 Админ":      "!give !take !setmoney !say !embed !announce !clearwarn !warn !drawlotto",
+            "💰 Экономика": [
+                ("`!money`",          "Показать баланс (наличные + банк)"),
+                ("`!pay @user сумма`","Перевести деньги другому игроку"),
+                ("`!deposit сумма`",  "Положить деньги в банк"),
+                ("`!withdraw сумма`", "Снять деньги из банка"),
+                ("`!daily`",          "Ежедневный бонус (серия до 3 000 💰)"),
+                ("`!top`",            "Топ-10 богатейших игроков"),
+                ("`!toplevel`",       "Топ-10 по уровню и XP"),
+            ],
+            "⭐ Профиль и уровень": [
+                ("`!profile [@user]`","Полный профиль игрока"),
+                ("`!level [@user]`",  "Уровень и XP-прогресс"),
+                ("`!avatar [@user]`", "Аватар в полном размере"),
+                ("`!userinfo [@user]`","Информация об участнике сервера"),
+                ("`!serverinfo`",     "Информация о сервере"),
+            ],
+            "🎯 Заработок и риск": [
+                ("`!rob @user`",      "Ограбить игрока (cooldown 1ч, шанс 45%)"),
+                ("`!crime`",          "Совершить преступление (cooldown 30мин, шанс 60%)"),
+                ("`!fish`",           "Порыбачить (нужна удочка, cooldown 5мин)"),
+                ("`!lotto`",          "Добавить лотерейный билет в пул"),
+                ("`!drawlotto`",      "🔑 Провести розыгрыш лотереи"),
+            ],
+            "🎰 Казино и игры": [
+                ("`!bj ставка`",                "Блэкджек (×3 блэкджек / ×2 победа)"),
+                ("`!flip ставка орел/решка`",   "Орёл или решка (×2)"),
+                ("`!spin ставка`",              "Слоты (×5 джекпот / ×2 два одинаковых)"),
+                ("`!dice ставка число`",        "Угадай кубик 1–6 (×5)"),
+                ("`!roulette ставка выбор`",    "Рулетка: red/black/green/число (×2–×35)"),
+            ],
+            "🛒 Магазин и инвентарь": [
+                ("`!shop`",               "Каталог магазина"),
+                ("`!buy <id>`",           "Купить предмет"),
+                ("`!inventory [@user]`",  "Посмотреть инвентарь"),
+                ("`!use <id> [@user]`",   "Использовать предмет (bomb требует @user)"),
+            ],
+            "🏢 Бизнес": [
+                ("`!buy_business тип название`", "Купить бизнес (макс. 3)"),
+                ("`!sell_business название`",    "Продать бизнес (70% стоимости)"),
+                ("`!upgrade_business название`", "Улучшить бизнес (раз в сутки)"),
+                ("`!repair_business название`",  "Отремонтировать бизнес"),
+                ("`!businesses [@user]`",        "Список бизнесов"),
+                ("`!business_info`",             "Типы и характеристики бизнесов"),
+                ("`!active_effects`",            "Активные серверные эффекты"),
+                ("`!business_help`",             "Гайд по бизнес-командам"),
+            ],
+            "💳 Кредиты": [
+                ("`!applyloan сумма дней`",    "Оформить кредит (стаж 30+ дней)"),
+                ("`!calculatecredit сумма дн`","Рассчитать кредит без оформления"),
+                ("`!checkloan`",               "Статус активного кредита"),
+                ("`!payloan сумма`",           "Внести платёж по кредиту"),
+            ],
+            "📦 Работа на складе": [
+                ("`!gb`",      "Начать смену (пикинг или баление, случайно)"),
+                ("`!priemer`", "Показатель эффективности (влияет на зарплату)"),
+            ],
+            "📜 Петиции": [
+                ("`!petition текст`",   "Создать петицию"),
+                ("`!vote номер`",       "Подписать петицию"),
+                ("`!petitions`",        "Список активных петиций"),
+                ("`!yes номер`",        "🔑 Проголосовать «За» (Admin)"),
+                ("`!no номер`",         "🔑 Проголосовать «Против» (Admin)"),
+            ],
+            "🛡️ Модерация": [
+                ("`!mute @user минуты`",     "🔑 Замутить участника"),
+                ("`!unmute @user`",          "🔑 Снять мут"),
+                ("`!ban @user дней`",        "🔑 Забанить на N дней"),
+                ("`!kick @user [причина]`",  "🔑 Кикнуть участника"),
+                ("`!warn @user [причина]`",  "🔑 Выдать предупреждение"),
+                ("`!warns [@user]`",         "Посмотреть варны"),
+                ("`!clearwarn @user`",       "🔑 Сбросить все варны"),
+                ("`!clear N`",               "🔑 Удалить N сообщений"),
+                ("`!clearday N`",            "🔑 Удалить сообщения за N дней"),
+                ("`!clearuser @user N`",     "🔑 Удалить N сообщений участника"),
+                ("`!clearuserday @user N`",  "🔑 Удалить сообщения участника за N дней"),
+            ],
+            "👑 Администратор": [
+                ("`!give @user сумма`",    "Выдать деньги участнику"),
+                ("`!take @user сумма`",    "Снять деньги с участника"),
+                ("`!setmoney @user сумма`","Установить точный баланс"),
+                ("`!say текст`",           "Написать от имени бота"),
+                ("`!embed заголовок текст`","Отправить красивый embed"),
+                ("`!announce текст`",      "Объявление с пингом @here"),
+            ],
+            "🎭 Развлечения": [
+                ("`!joke`",              "Случайная шутка"),
+                ("`!predict`",           "Случайное предсказание"),
+                ("`!8ball вопрос`",      "Магический шар — ответ на вопрос"),
+                ("`!rate что-угодно`",   "Оценить что-либо по шкале 0–100"),
+                ("`!coinflip` / `!cf`",  "Подбросить монетку"),
+                ("`!hug @user`",         "Обнять участника"),
+                ("`!slap @user`",        "Дать пощёчину"),
+                ("`!kiss @user`",        "Поцеловать участника"),
+                ("`!greet @user`",       "Поприветствовать участника"),
+                ("`!z @user`",           "Напомнить об украинском языке"),
+                ("`!random`",            "Случайный «невезучий» игрок дня"),
+                ("`!pick @user`",        "Позвать участника зайти"),
+            ],
+            "ℹ️ Информация": [
+                ("`!moneyhelp`",    "Гайд по экономике"),
+                ("`!business_help`","Гайд по бизнесу"),
+                ("`!help команда`", "Подробная справка по любой команде"),
+            ],
         }
-        for cat, cmds in sections.items():
-            embed.add_field(name=cat, value=cmds, inline=False)
-        embed.set_footer(text="Префикс: ! | Также: !help <команда>")
-        try: await ctx.author.send(embed=embed)
-        except discord.Forbidden: await ctx.send(embed=embed)
+
+        # Разбиваем на несколько embed (Discord ограничивает кол-во полей)
+        embeds = []
+        first  = True
+        for section_name, commands_list in sections.items():
+            if first:
+                emb = discord.Embed(
+                    title="📖 Помощь — BAZARCIK_PM",
+                    description=(
+                        "Полный список команд бота. Префикс: **`!`**\n"
+                        "🔑 = только администраторы\n"
+                        "Подробнее по команде: **`!help <команда>`**\n\u200b"
+                    ),
+                    color=discord.Color.blurple()
+                )
+                first = False
+            else:
+                emb = discord.Embed(color=discord.Color.blurple())
+
+            lines = "\n".join(f"{cmd} — {desc}" for cmd, desc in commands_list)
+            emb.add_field(name=section_name, value=lines, inline=False)
+            embeds.append(emb)
+
+        embeds[-1].set_footer(text="Используй !help <команда> для подробной информации по любой команде")
+
+        try:
+            for emb in embeds:
+                await ctx.author.send(embed=emb)
+            if ctx.guild:
+                await ctx.send(f"📬 {ctx.author.mention}, справка отправлена тебе в ЛС!", delete_after=8)
+        except discord.Forbidden:
+            # Если ЛС закрыты — шлём в канал (только первый embed, чтобы не спамить)
+            await ctx.send(
+                f"{ctx.author.mention}, разреши личные сообщения от участников сервера, "
+                "чтобы получить полную справку. Показываю краткую версию здесь:",
+                embed=embeds[0]
+            )
+
+    # ── !help <команда> ──────────────────────────────────────
+    async def send_command_help(self, command):
+        ctx = self.context
+        try: await ctx.message.delete()
+        except Exception: pass
+
+        embed = discord.Embed(
+            title=f"📋 Справка: !{command.name}",
+            color=discord.Color.gold()
+        )
+
+        # Краткое описание
+        if command.brief:
+            embed.description = f"_{command.brief}_"
+
+        # Синтаксис
+        params = command.signature or ""
+        embed.add_field(
+            name="📌 Синтаксис",
+            value=f"`!{command.name} {params}`".strip(),
+            inline=False
+        )
+
+        # Подробное описание
+        if command.help:
+            embed.add_field(
+                name="📖 Описание",
+                value=command.help,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📖 Описание",
+                value="_Подробное описание отсутствует._",
+                inline=False
+            )
+
+        # Псевдонимы
+        if command.aliases:
+            embed.add_field(
+                name="🔀 Псевдонимы",
+                value=", ".join(f"`!{a}`" for a in command.aliases),
+                inline=False
+            )
+
+        # Проверяем, требует ли команда прав администратора
+        for check in command.checks:
+            if "administrator" in str(check):
+                embed.add_field(
+                    name="🔑 Права",
+                    value="Только для администраторов сервера",
+                    inline=False
+                )
+                break
+
+        embed.set_footer(text="!help — список всех команд")
+        await ctx.send(embed=embed)
+
+    # ── !help <группа> ───────────────────────────────────────
+    async def send_group_help(self, group):
+        await self.send_command_help(group)
+
+    # ── Команда не найдена ────────────────────────────────────
+    async def command_not_found(self, string):
+        return f"❌ Команда `!{string}` не найдена. Используй `!help` для списка команд."
+
+    async def send_error_message(self, error):
+        ctx = self.context
+        await ctx.send(error, delete_after=8)
 
 bot.help_command = MyHelpCommand()
 
@@ -2270,7 +3496,6 @@ async def on_command_error(ctx, error):
 async def on_ready():
     print(f"✅ {bot.user.name}#{bot.user.discriminator} запущен!")
     print(f"   Серверов: {len(bot.guilds)}")
-    generate_greeting()
     send_loan_warnings.start()
     daily_business_income.start()
     tax_deduction_task.start()
