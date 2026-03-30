@@ -2059,68 +2059,115 @@ AUTO_CHANNELS = {
 }
 
 YOUR_USER_ID = 539475816342487040
-AUDIO_FILE   = "greeting.mp3"
+AUDIO_FILE   = os.path.abspath("greeting.mp3")  # абсолютный путь
 
 def generate_greeting():
     if not os.path.exists(AUDIO_FILE):
-        tts = gTTS("Привіт Юра Яковенко", lang="uk")
-        tts.save(AUDIO_FILE)
-        print(f"[AUDIO] Файл '{AUDIO_FILE}' створено.")
+        try:
+            from gtts import gTTS
+            tts = gTTS("Привіт Юра Яковенко", lang="uk")
+            tts.save(AUDIO_FILE)
+            print(f"[AUDIO] Файл создан: {AUDIO_FILE}")
+        except Exception as e:
+            print(f"[AUDIO] Ошибка создания файла: {e}")
+    else:
+        print(f"[AUDIO] Файл уже существует: {AUDIO_FILE}")
 
 @bot.event
 async def on_voice_state_update(member, before, after):
 
     # === ПРИВЕТСТВИЕ ===
-    # Пропускаем если это переход через авто-канал (триггер)
     if (member.id == YOUR_USER_ID
-            and after.channel
-            and before.channel != after.channel
-            and after.channel.id not in AUTO_CHANNELS):  # ← не триггер-канал
+            and after.channel is not None
+            and after.channel.id not in AUTO_CHANNELS
+            and (before.channel is None or before.channel.id != after.channel.id)):
 
-        channel = after.channel
+        await asyncio.sleep(1.5)  # ждём пока канал создастся
+
+        channel = member.voice.channel if member.voice else after.channel
+        if channel is None:
+            print("[AUDIO] Канал не найден после ожидания")
+            return
+
+        print(f"[AUDIO] Начинаем приветствие в канале: {channel.name}")
+
+        # Отключаем бота если уже в канале
+        for vc_old in list(bot.voice_clients):
+            if vc_old.guild.id == channel.guild.id:
+                try:
+                    await vc_old.disconnect(force=True)
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+
         vc = None
         greeted = False
 
-        for voice_client in bot.voice_clients:
-            if voice_client.guild == channel.guild:
-                await voice_client.disconnect(force=True)
-
-        await asyncio.sleep(1)  # ждём пока канал стабилизируется
-
         try:
-            print(f"[AUDIO] Подключаемся к каналу: {channel.name}")
-            vc = await channel.connect(timeout=30.0, reconnect=True)
-            await asyncio.sleep(2)
+            print(f"[AUDIO] Подключаемся...")
+            vc = await channel.connect(timeout=30.0, reconnect=False)
+            await asyncio.sleep(1.5)
+            print(f"[AUDIO] Подключились: {vc.is_connected()}")
 
             if not os.path.exists(AUDIO_FILE):
+                print("[AUDIO] Файл не найден, генерируем...")
                 generate_greeting()
 
-            source = nextcord.FFmpegPCMAudio(AUDIO_FILE, executable="ffmpeg", options="-loglevel panic")
-            vc.play(source)
-            await asyncio.sleep(1)
+            if not os.path.exists(AUDIO_FILE):
+                print("[AUDIO] Файл всё равно не найден!")
+                await vc.disconnect(force=True)
+                return
 
-            print(f"[AUDIO] is_playing: {vc.is_playing()}")
-            while vc.is_playing():
-                await asyncio.sleep(0.5)
+            print(f"[AUDIO] Играем файл: {AUDIO_FILE}")
 
-            greeted = True
-            await vc.disconnect(force=True)
-            print("[AUDIO] Завершено")
+            finished = asyncio.Event()
+
+            def after_play(error):
+                if error:
+                    print(f"[AUDIO] Ошибка при воспроизведении: {error}")
+                else:
+                    print(f"[AUDIO] Воспроизведение завершено!")
+                bot.loop.call_soon_threadsafe(finished.set)
+
+            source = nextcord.FFmpegPCMAudio(
+                AUDIO_FILE,
+                executable="ffmpeg",
+                before_options="-re",
+                options="-loglevel panic"
+            )
+            vc.play(source, after=after_play)
+
+            print(f"[AUDIO] is_playing сразу: {vc.is_playing()}")
+
+            try:
+                await asyncio.wait_for(finished.wait(), timeout=20.0)
+                greeted = True
+            except asyncio.TimeoutError:
+                print("[AUDIO] Таймаут! Файл не доиграл за 20 секунд")
 
         except Exception as e:
+            import traceback
             print(f"[AUDIO] Ошибка: {e}")
+            traceback.print_exc()
+        finally:
             if vc and vc.is_connected():
                 await vc.disconnect(force=True)
+                print("[AUDIO] Отключились от канала")
 
         if not greeted:
-            print("[AUDIO] Не вдалось привітати — кікаємо всіх!")
-            for m in list(channel.members):
-                if m.id != YOUR_USER_ID:
-                    try:
-                        await m.move_to(None)
-                        print(f"[AUDIO] Кікнув {m.name}")
-                    except Exception as e:
-                        print(f"[AUDIO] Не вдалось кікнути {m.name}: {e}")
+            print("[AUDIO] Не удалось поприветствовать — кикаем всех!")
+            try:
+                ch = member.guild.get_channel(channel.id)
+                if ch:
+                    for m in list(ch.members):
+                        if m.id != YOUR_USER_ID:
+                            try:
+                                await m.move_to(None)
+                                print(f"[AUDIO] Кикнул {m.name}")
+                            except Exception as e:
+                                print(f"[AUDIO] Не удалось кикнуть {m.name}: {e}")
+            except Exception as e:
+                print(f"[AUDIO] Ошибка кика: {e}")
 
     # === СОЗДАНИЕ АВТО-КАНАЛА ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
@@ -2151,7 +2198,6 @@ async def on_voice_state_update(member, before, after):
 
         await asyncio.sleep(5)
 
-        # Проверяем что канал ещё существует перед удалением
         ch = member.guild.get_channel(before.channel.id)
         if ch and len(ch.members) == 0:
             try:
