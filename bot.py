@@ -2069,15 +2069,23 @@ def generate_greeting():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # === ПРИВЕТСТВИЕ КОНКРЕТНОГО ПОЛЬЗОВАТЕЛЯ ===
-    if member.id == YOUR_USER_ID and after.channel and before.channel != after.channel:
+
+    # === ПРИВЕТСТВИЕ ===
+    # Пропускаем если это переход через авто-канал (триггер)
+    if (member.id == YOUR_USER_ID
+            and after.channel
+            and before.channel != after.channel
+            and after.channel.id not in AUTO_CHANNELS):  # ← не триггер-канал
+
         channel = after.channel
         vc = None
         greeted = False
 
         for voice_client in bot.voice_clients:
             if voice_client.guild == channel.guild:
-                await voice_client.disconnect()
+                await voice_client.disconnect(force=True)
+
+        await asyncio.sleep(1)  # ждём пока канал стабилизируется
 
         try:
             print(f"[AUDIO] Подключаемся к каналу: {channel.name}")
@@ -2096,13 +2104,13 @@ async def on_voice_state_update(member, before, after):
                 await asyncio.sleep(0.5)
 
             greeted = True
-            await vc.disconnect()
+            await vc.disconnect(force=True)
             print("[AUDIO] Завершено")
 
         except Exception as e:
             print(f"[AUDIO] Ошибка: {e}")
             if vc and vc.is_connected():
-                await vc.disconnect()
+                await vc.disconnect(force=True)
 
         if not greeted:
             print("[AUDIO] Не вдалось привітати — кікаємо всіх!")
@@ -2113,7 +2121,8 @@ async def on_voice_state_update(member, before, after):
                         print(f"[AUDIO] Кікнув {m.name}")
                     except Exception as e:
                         print(f"[AUDIO] Не вдалось кікнути {m.name}: {e}")
-    # Create
+
+    # === СОЗДАНИЕ АВТО-КАНАЛА ===
     if after.channel and after.channel.id in AUTO_CHANNELS:
         guild    = member.guild
         cat_id   = AUTO_CHANNELS[after.channel.id]
@@ -2134,15 +2143,21 @@ async def on_voice_state_update(member, before, after):
         await new_ch.edit(sync_permissions=True)
         await member.move_to(new_ch)
 
-    # Delete empty
+    # === УДАЛЕНИЕ ПУСТОГО КАНАЛА ===
     if before.channel:
         if before.channel.id in AUTO_CHANNELS: return
         if before.channel.category_id not in AUTO_CHANNELS.values(): return
         if not re.search(r"\d+$", before.channel.name): return
+
         await asyncio.sleep(5)
-        if len(before.channel.members) == 0:
-            try: await before.channel.delete()
-            except Exception as e: print(f"[ERROR] delete channel: {e}")
+
+        # Проверяем что канал ещё существует перед удалением
+        ch = member.guild.get_channel(before.channel.id)
+        if ch and len(ch.members) == 0:
+            try:
+                await ch.delete()
+            except Exception as e:
+                print(f"[ERROR] delete channel: {e}")
 
 # ============================================================
 #  HELP COMMAND
