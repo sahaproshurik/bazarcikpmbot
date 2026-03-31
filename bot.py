@@ -3284,14 +3284,14 @@ async def ask_ai(ctx, *, question: str):
 
     status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *AI думает...*")
 
-    history = _chat_histories[ctx.guild.id]
+    # ВАЖНО: Теперь мы берём историю конкретного пользователя (ctx.author.id)
+    history = _chat_histories[ctx.author.id]
     history.append({"role": "user", "content": question})
 
     try:
-        # Для Groq системный промпт добавляется первым сообщением в список
         messages_for_api = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + history
 
-        # Отправляем запрос в Groq (используем мощную и быструю Llama 3 70B)
+        # Отправляем запрос в Groq
         reply_obj = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: _groq_client.chat.completions.create(
@@ -3348,11 +3348,12 @@ async def voice_leave(ctx):
         await ctx.send("❌ Я не в канале.", delete_after=5)
 
 
-@bot.command(name="aiclear", brief="Очистить память диалога AI")
+@bot.command(name="aiclear", brief="Очистить свою личную память диалога с AI")
 async def voice_clear(ctx):
     await ctx.message.delete()
-    _chat_histories[ctx.guild.id].clear()
-    await ctx.send("🗑️ История диалога забыта. Начинаем с чистого листа!", delete_after=5)
+    # Очищаем память только для того, кто написал команду
+    _chat_histories[ctx.author.id].clear()
+    await ctx.send(f"🗑️ {ctx.author.mention}, твоя личная история диалога забыта. Начинаем с чистого листа!", delete_after=5)
 
 
 @bot.command(name="aivoice", brief="Сменить голос AI")
