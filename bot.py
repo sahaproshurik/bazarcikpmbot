@@ -21,6 +21,7 @@ import io
 import wave
 import tempfile
 from collections import defaultdict
+from discord.sinks import Sink as DiscordSink
 
 # ============================================================
 #  BOT SETUP
@@ -3243,7 +3244,7 @@ async def on_voice_state_update(member, before, after):
 # ============================================================
 #  VOICE AI — SINK + SESSION
 # ============================================================
-class VoiceSink(discord.sinks.Sink):
+class VoiceSink(DiscordSink):
     def __init__(self, session):
         super().__init__()
         self.session = session
