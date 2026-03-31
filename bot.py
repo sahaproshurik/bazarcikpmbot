@@ -3244,306 +3244,134 @@ async def on_voice_state_update(member, before, after):
 
 
 # ============================================================
-#  VOICE AI — SINK + SESSION (ОБНОВЛЕНО ПОД PY-CORD)
+#  TEXT-TO-VOICE AI (БЕЗ ПРОСЛУШКИ, ТОЛЬКО ОЗВУЧКА)
 # ============================================================
-class VoiceSink(discord.sinks.Sink):
-    def __init__(self, session):
-        super().__init__()
-        self.session = session
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+TTS_VOICE = os.getenv("TTS_VOICE", "ru-RU-SvetlanaNeural")
+AI_SYSTEM_PROMPT = os.getenv("AI_SYSTEM_PROMPT",
+                             "Ты голосовой ИИ-ассистент в Discord. Отвечай кратко и по-дружески, "
+                             "как в живом разговоре. Без Markdown-форматирования.")
 
-    def write(self, data, user):
-        # В Py-cord "user" — это ID пользователя (число), а "data" — сразу сырые PCM байты
-        if user and user != bot.user.id:
-            self.session.add_audio(user, data)
+_anthropic_client = anthropic_lib.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
-    def cleanup(self):
-        pass
+# guild_id → history (список сообщений)
+_chat_histories = defaultdict(list)
 
 
-class VoiceSession:
-    SAMPLE_RATE = 48_000
-    CHANNELS = 2
-    SAMPLE_WIDTH = 2
-
-    def __init__(self, vc: discord.VoiceClient, text_channel):
-        self.vc = vc
-        self.text_channel = text_channel
-        self.history: list[dict] = []
-        self.buffers: dict = defaultdict(list)
-        self.last_audio: dict = {}
-        self.processing: set = set()
-        self.active = True
-        self._lock = asyncio.Lock()
-
-        # Подключаем наш Sink
-        self.sink = VoiceSink(self)
-
-        # В Pycord используется start_recording, который требует функцию-коллбэк
-        self.vc.start_recording(self.sink, self._dummy_callback)
-
-        asyncio.get_event_loop().create_task(self._silence_watcher())
-
-    async def _dummy_callback(self, sink, *args):
-        # Эта функция вызовется при остановке записи. Нам она не нужна,
-        # так как мы обрабатываем аудио кусками в реальном времени.
-        pass
-
-    async def _silence_watcher(self):
-        while self.active:
-            await asyncio.sleep(0.2)
-            now = time.time()
-            for uid, last in list(self.last_audio.items()):
-                if uid in self.processing:
-                    continue
-                if now - last >= SILENCE_DURATION and self.buffers.get(uid):
-                    await self._handle_speech(uid)
-
-    async def _handle_speech(self, user_id: int):
-        async with self._lock:
-            if user_id in self.processing:
-                return
-            chunks = self.buffers.pop(user_id, [])
-            self.last_audio.pop(user_id, None)
-            if not chunks:
-                return
-            self.processing.add(user_id)
-
-        try:
-            pcm = b"".join(chunks)
-            duration = len(pcm) / (self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
-            if duration < MIN_AUDIO_DURATION:
-                return
-
-            # PCM → WAV
-            wav_buf = io.BytesIO()
-            with wave.open(wav_buf, "wb") as wf:
-                wf.setnchannels(self.CHANNELS)
-                wf.setsampwidth(self.SAMPLE_WIDTH)
-                wf.setframerate(self.SAMPLE_RATE)
-                wf.writeframes(pcm)
-            wav_buf.seek(0)
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp.write(wav_buf.read())
-                tmp_path = tmp.name
-
-            # Whisper STT
-            with open(tmp_path, "rb") as audio_file:
-                transcription = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    lambda: _groq_client_stt.audio.transcriptions.create(
-                        file=("audio.wav", audio_file, "audio/wav"),
-                        model="whisper-large-v3",
-                        language="ru",
-                    )
-                )
-            os.unlink(tmp_path)
-            text = transcription.text.strip()
-            if not text:
-                return
-
-            user = bot.get_user(user_id)
-            name = user.display_name if user else f"User {user_id}"
-            await self.text_channel.send(f"🎙️ **{name}:** {text}")
-
-            # Claude AI
-            self.history.append({"role": "user", "content": text})
-            reply_obj = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: _anthropic_client.messages.create(
-                    model="claude-sonnet-4-6",  # Обновил модель на актуальную (3.5)
-                    max_tokens=400,
-                    system=AI_SYSTEM_PROMPT,
-                    messages=self.history,
-                ),
-            )
-            reply = reply_obj.content[0].text.strip()
-            self.history.append({"role": "assistant", "content": reply})
-            await self.text_channel.send(f"🤖 **AI:** {reply}")
-
-            # edge-tts
-            tts_path = tempfile.mktemp(suffix=".mp3")
-            communicate = edge_tts.Communicate(reply, TTS_VOICE)
-            await communicate.save(tts_path)
-
-            # Воспроизведение
-            while self.vc.is_playing():
-                await asyncio.sleep(0.2)
-            if self.vc.is_connected():
-                def after_play(e):
-                    try:
-                        os.unlink(tts_path)
-                    except Exception:
-                        pass
-
-                self.vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
-
-        except Exception as e:
-            await self.text_channel.send(f"❌ Ошибка голосового AI: `{e}`")
-        finally:
-            self.processing.discard(user_id)
-
-    def add_audio(self, user_id: int, pcm: bytes):
-        try:
-            rms = audioop.rms(pcm, self.SAMPLE_WIDTH)
-        except Exception:
-            rms = 0
-        if rms < SILENCE_THRESHOLD:
-            return
-        self.buffers[user_id].append(pcm)
-        self.last_audio[user_id] = time.time()
-
-    async def stop(self):
-        self.active = False
-        if self.vc.is_playing():
-            self.vc.stop()
-        try:
-            # В Pycord для остановки используется stop_recording
-            self.vc.stop_recording()
-        except Exception:
-            pass
-        await self.vc.disconnect()
-
-
-# ============================================================
-#  VOICE AI — КОМАНДЫ
-# ============================================================
 @bot.command(
-    name="join",
-    aliases=["войти", "j"],
-    brief="Подключить AI-бота к голосовому каналу",
-    help=(
-        "Бот заходит в твой голосовой канал и начинает слушать голос.\n\n"
-        "**Использование:** `!join`\n\n"
-        "После подключения просто говори — бот распознает речь через Whisper, "
-        "ответит через Claude AI и озвучит ответ голосом.\n\n"
-        "Выйти: `!leave`\n"
-        "Сбросить историю диалога: `!aiclear`"
-    )
+    name="ask",
+    aliases=["a", "спроси"],
+    brief="Задать вопрос AI (ответ текстом и голосом)",
+    help="Напиши вопрос, бот сгенерирует ответ и озвучит его в голосовом канале.\n\nИспользование: `!ask Привет, расскажи анекдот`"
 )
+async def ask_ai(ctx, *, question: str):
+    await ctx.message.delete()
+
+    # 1. Проверяем, в голосовом ли канале пользователь
+    if not ctx.author.voice:
+        await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5)
+        return
+
+    # 2. Подключаем бота, если он еще не там
+    vc = ctx.guild.voice_client
+    if not vc or not vc.is_connected():
+        try:
+            vc = await ctx.author.voice.channel.connect()
+        except Exception as e:
+            await ctx.send(f"❌ Ошибка подключения: {e}", delete_after=5)
+            return
+
+    # Отправляем сообщение ожидания
+    status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *AI думает...*")
+
+    history = _chat_histories[ctx.guild.id]
+    history.append({"role": "user", "content": question})
+
+    try:
+        # 3. Отправляем запрос в Claude (используем самую стабильную рабочую модель)
+        reply_obj = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _anthropic_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=400,
+                system=AI_SYSTEM_PROMPT,
+                messages=history,
+            ),
+        )
+        reply = reply_obj.content[0].text.strip()
+        history.append({"role": "assistant", "content": reply})
+
+        # Обновляем текст в чате
+        await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n🤖 **AI**: {reply}")
+
+        # 4. Генерируем озвучку (TTS)
+        tts_path = tempfile.mktemp(suffix=".mp3")
+        communicate = edge_tts.Communicate(reply, TTS_VOICE)
+        await communicate.save(tts_path)
+
+        # Ждем, пока бот договорит предыдущую фразу (если он уже что-то читает)
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+
+        # 5. Воспроизводим звук
+        if vc.is_connected():
+            def after_play(e):
+                try:
+                    os.unlink(tts_path)
+                except Exception:
+                    pass
+
+            vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
+
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Ошибка ИИ: `{e}`")
+
+
+@bot.command(name="join", aliases=["j"], brief="Позвать бота в голосовой канал")
 async def voice_join(ctx):
     await ctx.message.delete()
     if not ctx.author.voice:
         await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5)
         return
-    if ctx.guild.id in _voice_sessions:
-        await ctx.send("⚠️ Уже в голосовом канале. Используй `!leave` чтобы выйти.", delete_after=5)
+    if ctx.guild.voice_client:
+        await ctx.send("⚠️ Я уже в канале. Пиши `!ask <вопрос>`.", delete_after=5)
         return
-    try:
-        vc = await ctx.author.voice.channel.connect()
-    except discord.ClientException:
-        await ctx.send("❌ Не удалось подключиться.", delete_after=5)
-        return
-    _voice_sessions[ctx.guild.id] = VoiceSession(vc, ctx.channel)
-    await ctx.send(
-        f"✅ Подключился к **{ctx.author.voice.channel.name}**! 🎙️ Говори — я слушаю.\n"
-        f"`!leave` — выйти | `!aiclear` — сбросить историю | `!aivoice` — сменить голос"
-    )
+    await ctx.author.voice.channel.connect()
+    await ctx.send("✅ Подключился! Пиши `!ask <вопрос>`, и я отвечу голосом.")
 
 
-@bot.command(
-    name="leave",
-    aliases=["выйти", "l"],
-    brief="Отключить AI-бота от голосового канала",
-    help="Бот выходит из голосового канала и завершает сессию.\n\n**Использование:** `!leave`"
-)
+@bot.command(name="leave", aliases=["l", "выйти"], brief="Выгнать бота из войса")
 async def voice_leave(ctx):
     await ctx.message.delete()
-    session = _voice_sessions.pop(ctx.guild.id, None)
-    if session:
-        await session.stop()
+    if ctx.guild.voice_client:
+        await ctx.guild.voice_client.disconnect()
         await ctx.send("👋 Вышел из голосового канала.")
     else:
-        await ctx.send("❌ Я не в голосовом канале.", delete_after=5)
+        await ctx.send("❌ Я не в канале.", delete_after=5)
 
 
-@bot.command(
-    name="aiclear",
-    brief="Очистить историю диалога с AI",
-    help=(
-        "Сбрасывает историю голосового диалога — AI начнёт разговор заново.\n\n"
-        "**Использование:** `!aiclear`"
-    )
-)
+@bot.command(name="aiclear", brief="Очистить память диалога AI")
 async def voice_clear(ctx):
     await ctx.message.delete()
-    session = _voice_sessions.get(ctx.guild.id)
-    if session:
-        session.history.clear()
-        await ctx.send("🗑️ История диалога очищена.", delete_after=5)
-    else:
-        await ctx.send("❌ Нет активной голосовой сессии.", delete_after=5)
+    _chat_histories[ctx.guild.id].clear()
+    await ctx.send("🗑️ История диалога забыта. Начинаем с чистого листа!", delete_after=5)
 
 
-@bot.command(
-    name="aistatus",
-    brief="Статус голосового AI-бота",
-    help="Показывает текущие настройки голосового AI.\n\n**Использование:** `!aistatus`"
-)
-async def voice_status(ctx):
-    await ctx.message.delete()
-    session = _voice_sessions.get(ctx.guild.id)
-    if not session:
-        await ctx.send("💤 Голосовой AI не активен.", delete_after=5)
-        return
-    await ctx.send(
-        f"📊 **Голосовой AI:**\n"
-        f"• Канал: `{session.vc.channel.name}`\n"
-        f"• Сообщений в истории: `{len(session.history)}`\n"
-        f"• Whisper: `{WHISPER_MODEL_NAME}`\n"
-        f"• Голос TTS: `{TTS_VOICE}`\n"
-        f"• Порог тишины RMS: `{SILENCE_THRESHOLD}`"
-    )
-
-
-@bot.command(
-    name="aivoice",
-    brief="Сменить голос TTS для AI-бота",
-    help=(
-        "Меняет голос, которым AI отвечает в голосовом канале.\n\n"
-        "**Использование:** `!aivoice [имя_голоса]`\n\n"
-        "**Русские голоса:**\n"
-        "`ru-RU-SvetlanaNeural` — женский\n"
-        "`ru-RU-DmitryNeural` — мужской\n"
-        "`ru-RU-DariyaNeural` — женский\n\n"
-        "**Пример:** `!aivoice ru-RU-DmitryNeural`"
-    )
-)
+@bot.command(name="aivoice", brief="Сменить голос AI")
 async def voice_change(ctx, *, voice_name: str = None):
     global TTS_VOICE
     await ctx.message.delete()
     if not voice_name:
         await ctx.send(
             "🗣️ **Доступные голоса:**\n"
-            "• `ru-RU-SvetlanaNeural` (женский, по умолч.)\n"
+            "• `ru-RU-SvetlanaNeural` (женский)\n"
             "• `ru-RU-DmitryNeural` (мужской)\n"
             "• `ru-RU-DariyaNeural` (женский)\n\n"
-            "Использование: `!aivoice ru-RU-DmitryNeural`"
+            "Пример: `!aivoice ru-RU-DmitryNeural`"
         )
         return
     TTS_VOICE = voice_name
-    await ctx.send(f"✅ Голос AI изменён на `{TTS_VOICE}`")
-
-
-@bot.command(
-    name="aisystem",
-    brief="Изменить системный промпт AI",
-    help=(
-        "Меняет поведение AI в голосовых разговорах через системный промпт.\n\n"
-        "**Использование:**\n"
-        "`!aisystem` — посмотреть текущий промпт\n"
-        "`!aisystem <текст>` — установить новый промпт\n\n"
-        "**Пример:** `!aisystem Ты саркастичный помощник, который любит шутить.`"
-    )
-)
-async def voice_system(ctx, *, prompt: str = None):
-    global AI_SYSTEM_PROMPT
-    await ctx.message.delete()
-    if not prompt:
-        await ctx.send(f"📋 **Текущий промпт AI:**\n> {AI_SYSTEM_PROMPT}")
-        return
-    AI_SYSTEM_PROMPT = prompt
-    await ctx.send("✅ Системный промпт AI обновлён.")
+    await ctx.send(f"✅ Голос изменён на `{TTS_VOICE}`")
 
 # ============================================================
 #  HELP COMMAND
@@ -3831,25 +3659,7 @@ async def on_member_join(member):
 #  RUN
 # ============================================================
 load_dotenv()
-# ============================================================
-#  VOICE AI — НАСТРОЙКИ И ИНИЦИАЛИЗАЦИЯ
-# ============================================================
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
-TTS_VOICE          = os.getenv("TTS_VOICE", "ru-RU-SvetlanaNeural")
-SILENCE_THRESHOLD  = int(os.getenv("SILENCE_THRESHOLD", "500"))
-SILENCE_DURATION   = float(os.getenv("SILENCE_DURATION", "1.5"))
-MIN_AUDIO_DURATION = float(os.getenv("MIN_AUDIO_DURATION", "0.5"))
-AI_SYSTEM_PROMPT   = os.getenv("AI_SYSTEM_PROMPT",
-    "Ты голосовой ИИ-ассистент в Discord. Отвечай кратко и по-дружески, "
-    "как в живом разговоре. Без Markdown-форматирования.")
 
-_groq_client_stt = GroqClient(api_key=os.getenv("GROQ_API_KEY", ""))
-print("✅ Groq Whisper API готов")
-
-_anthropic_client = anthropic_lib.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-
-# guild_id → VoiceSession
-_voice_sessions: dict = {}
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("DISCORD_BOT_TOKEN не найден в .env файле!")
