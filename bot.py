@@ -3241,39 +3241,52 @@ async def on_voice_state_update(member, before, after):
                 await ch.delete()
             except Exception as e:
                 print(f"[ERROR] delete channel: {e}")
+
+
 # ============================================================
-#  VOICE AI — SINK + SESSION
+#  VOICE AI — SINK + SESSION (ОБНОВЛЕНО ПОД PY-CORD)
 # ============================================================
-class VoiceSink(DiscordSink):
+class VoiceSink(discord.sinks.Sink):
     def __init__(self, session):
         super().__init__()
         self.session = session
 
     def write(self, data, user):
-        if user and user != bot.user:
-            self.session.add_audio(user.id, data.pcm)
+        # В Py-cord "user" — это ID пользователя (число), а "data" — сразу сырые PCM байты
+        if user and user != bot.user.id:
+            self.session.add_audio(user, data)
 
     def cleanup(self):
         pass
 
 
 class VoiceSession:
-    SAMPLE_RATE  = 48_000
-    CHANNELS     = 2
+    SAMPLE_RATE = 48_000
+    CHANNELS = 2
     SAMPLE_WIDTH = 2
 
     def __init__(self, vc: discord.VoiceClient, text_channel):
-        self.vc           = vc
+        self.vc = vc
         self.text_channel = text_channel
         self.history: list[dict] = []
-        self.buffers: dict       = defaultdict(list)
-        self.last_audio: dict    = {}
-        self.processing: set     = set()
-        self.active              = True
-        self._lock               = asyncio.Lock()
-        self.sink                = VoiceSink(self)
-        vc.listen(self.sink)
+        self.buffers: dict = defaultdict(list)
+        self.last_audio: dict = {}
+        self.processing: set = set()
+        self.active = True
+        self._lock = asyncio.Lock()
+
+        # Подключаем наш Sink
+        self.sink = VoiceSink(self)
+
+        # В Pycord используется start_recording, который требует функцию-коллбэк
+        self.vc.start_recording(self.sink, self._dummy_callback)
+
         asyncio.get_event_loop().create_task(self._silence_watcher())
+
+    async def _dummy_callback(self, sink, *args):
+        # Эта функция вызовется при остановке записи. Нам она не нужна,
+        # так как мы обрабатываем аудио кусками в реальном времени.
+        pass
 
     async def _silence_watcher(self):
         while self.active:
@@ -3296,7 +3309,7 @@ class VoiceSession:
             self.processing.add(user_id)
 
         try:
-            pcm      = b"".join(chunks)
+            pcm = b"".join(chunks)
             duration = len(pcm) / (self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
             if duration < MIN_AUDIO_DURATION:
                 return
@@ -3338,7 +3351,7 @@ class VoiceSession:
             reply_obj = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: _anthropic_client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-3-5-sonnet-20241022",  # Обновил модель на актуальную (3.5)
                     max_tokens=400,
                     system=AI_SYSTEM_PROMPT,
                     messages=self.history,
@@ -3358,8 +3371,11 @@ class VoiceSession:
                 await asyncio.sleep(0.2)
             if self.vc.is_connected():
                 def after_play(e):
-                    try: os.unlink(tts_path)
-                    except Exception: pass
+                    try:
+                        os.unlink(tts_path)
+                    except Exception:
+                        pass
+
                 self.vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
 
         except Exception as e:
@@ -3382,7 +3398,8 @@ class VoiceSession:
         if self.vc.is_playing():
             self.vc.stop()
         try:
-            self.vc.stop_listening()
+            # В Pycord для остановки используется stop_recording
+            self.vc.stop_recording()
         except Exception:
             pass
         await self.vc.disconnect()
