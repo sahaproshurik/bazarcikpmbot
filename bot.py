@@ -3295,7 +3295,7 @@ async def ask_ai(ctx, *, question: str):
         reply_obj = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: _groq_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.3-70b-versatile",
                 max_tokens=400,
                 messages=messages_for_api,
             )
