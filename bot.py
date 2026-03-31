@@ -3351,7 +3351,7 @@ class VoiceSession:
             reply_obj = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: _anthropic_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",  # Обновил модель на актуальную (3.5)
+                    model="claude-sonnet-4-6",  # Обновил модель на актуальную (3.5)
                     max_tokens=400,
                     system=AI_SYSTEM_PROMPT,
                     messages=self.history,
