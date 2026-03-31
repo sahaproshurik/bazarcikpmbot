@@ -261,7 +261,7 @@ class MafiaJoinView(discord.ui.View):
         style=discord.ButtonStyle.green,
         custom_id="mafia_join_btn",   # нужен для persistent views
     )
-    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def join_button(self, button: discord.ui.Button, interaction: discord.Interaction):
         if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "waiting":
             return await interaction.response.send_message("❌ Набор закрыт!", ephemeral=True)
 
