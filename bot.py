@@ -135,6 +135,24 @@ async def mafia_ai_narrator(prompt_type: str, context_data: str = "") -> str:
             "Тебя подозревают. Оправдайся очень дерзко, "
             "наезжай на других и защищай Юру Яковенко. Без Markdown!"
         ),
+        "night_start": (
+            f"Ночь #{context_data} опустилась на город. "
+            "Опиши атмосферу ночи очень кратко и зловеще, в стиле Bazarcik PM. "
+            "Без Markdown, 1-2 предложения."
+        ),
+        "vote_result": (
+            f"Город проголосовал и изгнал {context_data}. "
+            "Прокомментируй это язвительно и смешно в стиле Bazarcik PM. "
+            "Без Markdown, 1 предложение."
+        ),
+        "all_voted": (
+            f"Все живые проголосовали в мафии. Текущие итоги: {context_data}. "
+            "Напряги атмосферу — скоро приговор. Без Markdown, 1 предложение."
+        ),
+        "night_actions_done": (
+            "Все ночные роли сделали свои ходы в мафии. "
+            "Скажи кратко, что город замер в ожидании рассвета. Без Markdown, 1 предложение."
+        ),
     }
     try:
         response = await asyncio.get_event_loop().run_in_executor(
@@ -247,6 +265,86 @@ async def _mafia_send_night_dm():
         if bot_role == "Мафия" and non_bot_alive and MAFIA_DATA["actions"]["kill"] is None:
             target_uid = random.choice(non_bot_alive)[0]
             MAFIA_DATA["actions"]["kill"] = target_uid
+        elif bot_role == "Доктор" and alive and MAFIA_DATA["actions"]["heal"] is None:
+            target_uid = random.choice(alive)[0]
+            MAFIA_DATA["actions"]["heal"] = target_uid
+        elif bot_role == "Комиссар" and non_bot_alive and MAFIA_DATA["actions"]["check"] is None:
+            target_uid = random.choice(non_bot_alive)[0]
+            MAFIA_DATA["actions"]["check"] = target_uid
+
+
+def _mafia_pending_actions() -> list[str]:
+    """Возвращает список ролей, которые ещё не сделали ход этой ночью."""
+    pending = []
+    for uid, data in MAFIA_DATA["players"].items():
+        if not data["is_alive"]:
+            continue
+        role = data["role"]
+        if role == "Мафия" and MAFIA_DATA["actions"]["kill"] is None:
+            pending.append("Мафия")
+        elif role == "Доктор" and MAFIA_DATA["actions"]["heal"] is None:
+            pending.append("Доктор")
+        elif role == "Комиссар" and MAFIA_DATA["actions"]["check"] is None:
+            pending.append("Комиссар")
+    return pending
+
+
+async def _mafia_process_morning(channel):
+    """Обрабатывает итоги ночи и переходит к дню (используется авто и ручным !morning)."""
+    kill_id = MAFIA_DATA["actions"]["kill"]
+    heal_id = MAFIA_DATA["actions"]["heal"]
+
+    result_text = "Этой ночью никто не погиб."
+    if kill_id is not None:
+        victim = MAFIA_DATA["players"].get(kill_id)
+        if victim:
+            if kill_id == heal_id:
+                result_text = (
+                    f"Мафия атаковала **{victim['name']}**, "
+                    f"но Доктор успел его спасти!"
+                )
+            elif victim["is_alive"]:
+                victim["is_alive"] = False
+                result_text = (
+                    f"Был зверски ликвидирован **{victim['name']}** "
+                    f"(роль: {victim['role']})."
+                )
+
+    MAFIA_DATA["actions"] = {"kill": None, "heal": None, "check": None}
+    MAFIA_DATA["phase"]   = "day"
+
+    story = await mafia_ai_narrator("morning", result_text)
+    await mafia_say(channel, story)
+
+    bot_data = MAFIA_DATA["players"].get(bot.user.id)
+    if bot_data and bot_data["is_alive"]:
+        ai_opinion = await mafia_ai_narrator("ai_defense", bot_data["role"])
+        await channel.send(f"🤖 **{bot.user.display_name} говорит:** {ai_opinion}")
+
+    if await _mafia_check_winner(channel):
+        return
+
+    alive, player_list = _mafia_numbered_list(include_bot=True)
+    await channel.send(
+        f"☀️ **ДЕНЬ #{MAFIA_DATA['night_count']}**\n"
+        f"Живые игроки:\n{player_list}\n\n"
+        f"🗳️ Голосуйте за изгнание: `!mafia_vote <номер>`\n"
+        f"⚖️ Завершить голосование: `!mafia_end_day`"
+    )
+
+
+async def _mafia_try_advance_night(channel):
+    """Если все живые спецроли сделали ход — автоматически наступает утро."""
+    if MAFIA_DATA["phase"] != "night":
+        return
+    pending = _mafia_pending_actions()
+    if pending:
+        return  # Ещё не все сделали ход
+    # Все действия получены — объявляем и переходим к утру
+    bridge_text = await mafia_ai_narrator("night_actions_done")
+    await mafia_say(channel, bridge_text)
+    await asyncio.sleep(2)
+    await _mafia_process_morning(channel)
 
 
 # ── КНОПКА ВХОДА В ИГРУ ────────────────────────────────────
@@ -391,11 +489,14 @@ async def mafia_go(ctx):
         f"Комиссар: **1** | "
         f"Мирных: **{n_civil + 1}** (включая бота)"
     )
+    night_msg = await mafia_ai_narrator("night_start", "1")
+    await mafia_say(ctx, night_msg)
+
     await ctx.send(
         f"🌑 **НОЧЬ #1 НАСТУПИЛА!**\n"
         f"Всего игроков: **{total}** | {roles_count}\n\n"
-        f"Роли розданы в ЛС. Мафия, Доктор, Комиссар — ждите инструкции!\n"
-        f"Ведущий, вызови `!morning` когда все сделали ход.\n"
+        f"Роли розданы в ЛС. Мафия, Доктор, Комиссар — действуйте!\n"
+        f"Переход к утру произойдёт автоматически когда все сделают ход.\n"
         f"Посмотреть статус: `!mafia_status`"
     )
     await _mafia_send_night_dm()
@@ -434,7 +535,14 @@ async def mafia_kill(ctx, number: int):
         return await ctx.send("❌ Нельзя убить себя!")
 
     MAFIA_DATA["actions"]["kill"] = target_id
-    await ctx.send(f"🔪 Цель выбрана: **{target_data['name']}**. Ждём утра.")
+    await ctx.send(f"🔪 Цель выбрана: **{target_data['name']}**. Ждём остальных ролей.")
+
+    channel = bot.get_channel(MAFIA_DATA["channel_id"])
+    if channel:
+        pending = _mafia_pending_actions()
+        if pending:
+            await channel.send(f"🌑 Ночные действия в процессе... (ждём: {', '.join(pending)})")
+        await _mafia_try_advance_night(channel)
 
 
 @bot.command(name="heal")
@@ -464,7 +572,14 @@ async def mafia_heal(ctx, number: int):
 
     target_id, target_data = alive[number - 1]
     MAFIA_DATA["actions"]["heal"] = target_id
-    await ctx.send(f"💊 Ты спасёшь: **{target_data['name']}**. Ждём утра.")
+    await ctx.send(f"💊 Ты спасёшь: **{target_data['name']}**. Ждём остальных ролей.")
+
+    channel = bot.get_channel(MAFIA_DATA["channel_id"])
+    if channel:
+        pending = _mafia_pending_actions()
+        if pending:
+            await channel.send(f"🌑 Ночные действия в процессе... (ждём: {', '.join(pending)})")
+        await _mafia_try_advance_night(channel)
 
 
 @bot.command(name="check")
@@ -501,60 +616,32 @@ async def mafia_check(ctx, number: int):
         f"{'🔴 **МАФИЯ!** Это враг!' if is_mafia else '⚪ Мирный (или особая роль).'}"
     )
 
+    channel = bot.get_channel(MAFIA_DATA["channel_id"])
+    if channel:
+        pending = _mafia_pending_actions()
+        if pending:
+            await channel.send(f"🌑 Ночные действия в процессе... (ждём: {', '.join(pending)})")
+        await _mafia_try_advance_night(channel)
+
 
 # ── ПЕРЕХОД К ДНЮ ──────────────────────────────────────────
 
 @bot.command(name="morning")
 async def mafia_morning(ctx):
-    """Ведущий завершает ночь и объявляет итоги."""
+    """[Резерв] Ведущий вручную завершает ночь (авто-переход работает когда все сделали ход)."""
     await ctx.message.delete()
     if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "night":
         return await ctx.send("❌ Сейчас не ночная фаза!", delete_after=5)
 
-    kill_id = MAFIA_DATA["actions"]["kill"]
-    heal_id = MAFIA_DATA["actions"]["heal"]
+    pending = _mafia_pending_actions()
+    if pending:
+        await ctx.send(
+            f"⚠️ Ещё не все сделали ход: **{', '.join(pending)}**\n"
+            f"Принудительный переход к утру...",
+            delete_after=8
+        )
 
-    result_text = "Этой ночью никто не погиб."
-    if kill_id is not None:
-        victim = MAFIA_DATA["players"].get(kill_id)
-        if victim:
-            if kill_id == heal_id:
-                result_text = (
-                    f"Мафия атаковала **{victim['name']}**, "
-                    f"но Доктор успел его спасти!"
-                )
-            elif victim["is_alive"]:
-                victim["is_alive"] = False
-                result_text = (
-                    f"Был зверски ликвидирован **{victim['name']}** "
-                    f"(роль: {victim['role']})."
-                )
-
-    # Сброс ночных действий
-    MAFIA_DATA["actions"] = {"kill": None, "heal": None, "check": None}
-    MAFIA_DATA["phase"]   = "day"
-
-    story = await mafia_ai_narrator("morning", result_text)
-    await mafia_say(ctx, story)
-
-    # Бот высказывает своё мнение
-    bot_data = MAFIA_DATA["players"].get(bot.user.id)
-    if bot_data and bot_data["is_alive"]:
-        ai_opinion = await mafia_ai_narrator("ai_defense", bot_data["role"])
-        await ctx.send(f"🤖 **{bot.user.display_name} говорит:** {ai_opinion}")
-
-    # Проверяем победу
-    if await _mafia_check_winner(ctx.channel):
-        return
-
-    # Показываем список живых для голосования
-    alive, player_list = _mafia_numbered_list(include_bot=True)
-    await ctx.send(
-        f"☀️ **ДЕНЬ #{MAFIA_DATA['night_count']}**\n"
-        f"Живые игроки:\n{player_list}\n\n"
-        f"🗳️ Голосуйте за изгнание: `!mafia_vote <номер>`\n"
-        f"⚖️ Завершить голосование: `!mafia_end_day`"
-    )
+    await _mafia_process_morning(ctx.channel)
 
 
 # ── ГОЛОСОВАНИЕ ────────────────────────────────────────────
@@ -599,10 +686,73 @@ async def mafia_vote(ctx, number: int):
                 f"🤖 **{bot.user.display_name}** подозрительно косится на **{bot_target_name}**..."
             )
 
+    # Проверяем — все ли живые проголосовали
+    alive_now, _ = _mafia_numbered_list(include_bot=True)
+    alive_ids = {uid for uid, _ in alive_now}
+    voted_ids = set(MAFIA_DATA["votes"].keys()) & alive_ids
+    votes_count = len(voted_ids)
+    total_alive = len(alive_ids)
+
+    if votes_count >= total_alive:
+        # Все проголосовали — авто-конец дня
+        from collections import Counter
+        counts    = Counter(MAFIA_DATA["votes"].values())
+        leader_id = counts.most_common(1)[0][0]
+        leader    = MAFIA_DATA["players"][leader_id]
+        summary   = ", ".join(
+            f"{MAFIA_DATA['players'][tid]['name']} — {cnt} голос(а)"
+            for tid, cnt in counts.most_common(3)
+            if tid in MAFIA_DATA["players"]
+        )
+        all_voted_text = await mafia_ai_narrator("all_voted", summary)
+        await mafia_say(ctx.channel, all_voted_text)
+        await asyncio.sleep(2)
+
+        # Выполняем изгнание
+        leader["is_alive"] = False
+        MAFIA_DATA["votes"] = {}
+
+        vote_comment = await mafia_ai_narrator("vote_result", leader["name"])
+        await ctx.send(
+            f"⚖️ {vote_comment}\n"
+            f"Город изгнал **{leader['name']}** — его роль: **{leader['role']}**"
+        )
+
+        exiled_user = bot.get_user(leader_id)
+        if exiled_user:
+            try:
+                await exiled_user.send(
+                    f"💀 Ты изгнан из города. Твоя роль была: **{leader['role']}**.\n"
+                    f"Можешь наблюдать, но не участвовать."
+                )
+            except discord.Forbidden:
+                pass
+
+        if await _mafia_check_winner(ctx.channel):
+            return
+
+        MAFIA_DATA["phase"]        = "night"
+        MAFIA_DATA["night_count"] += 1
+        MAFIA_DATA["actions"]      = {"kill": None, "heal": None, "check": None}
+
+        night_msg = await mafia_ai_narrator("night_start", str(MAFIA_DATA["night_count"]))
+        await mafia_say(ctx.channel, night_msg)
+
+        alive_next, player_list = _mafia_numbered_list(include_bot=True)
+        await ctx.send(
+            f"🌑 **НОЧЬ #{MAFIA_DATA['night_count']} НАСТУПИЛА!**\n"
+            f"Живых осталось: **{len(alive_next)}**\n"
+            f"Мафия, Доктор, Комиссар — действуйте!\n"
+            f"Переход к утру — автоматически когда все сделают ход."
+        )
+        await _mafia_send_night_dm()
+    else:
+        await ctx.send(f"📊 Проголосовало: **{votes_count}/{total_alive}**. Ждём остальных...")
+
 
 @bot.command(name="mafia_end_day")
 async def mafia_end_day(ctx):
-    """Подвести итоги голосования и изгнать игрока."""
+    """[Резерв] Принудительно завершить голосование (авто-конец срабатывает когда все проголосовали)."""
     await ctx.message.delete()
     if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "day":
         return await ctx.send("❌ Сейчас не дневная фаза!", delete_after=5)
@@ -616,12 +766,12 @@ async def mafia_end_day(ctx):
     victim["is_alive"] = False
     MAFIA_DATA["votes"] = {}
 
+    vote_comment = await mafia_ai_narrator("vote_result", victim["name"])
     await ctx.send(
-        f"⚖️ Большинством голосов город изгнал **{victim['name']}**.\n"
-        f"Его роль была: **{victim['role']}**"
+        f"⚖️ {vote_comment}\n"
+        f"Город изгнал **{victim['name']}** — его роль: **{victim['role']}**"
     )
 
-    # Уведомляем изгнанного в ЛС
     exiled_user = bot.get_user(killed_id)
     if exiled_user:
         try:
@@ -632,21 +782,22 @@ async def mafia_end_day(ctx):
         except discord.Forbidden:
             pass
 
-    # Проверяем победу
     if await _mafia_check_winner(ctx.channel):
         return
 
-    # Следующая ночь
     MAFIA_DATA["phase"]        = "night"
     MAFIA_DATA["night_count"] += 1
     MAFIA_DATA["actions"]      = {"kill": None, "heal": None, "check": None}
+
+    night_msg = await mafia_ai_narrator("night_start", str(MAFIA_DATA["night_count"]))
+    await mafia_say(ctx.channel, night_msg)
 
     alive, player_list = _mafia_numbered_list(include_bot=True)
     await ctx.send(
         f"🌑 **НОЧЬ #{MAFIA_DATA['night_count']} НАСТУПИЛА!**\n"
         f"Живых осталось: **{len(alive)}**\n"
-        f"Мафия, Доктор, Комиссар — ждите инструкций в ЛС!\n"
-        f"Ведущий, вызови `!morning` когда все сделали ход."
+        f"Мафия, Доктор, Комиссар — действуйте!\n"
+        f"Переход к утру — автоматически когда все сделают ход."
     )
     await _mafia_send_night_dm()
 
@@ -696,9 +847,14 @@ async def mafia_status(ctx):
     if MAFIA_DATA["phase"] == "waiting":
         embed.set_footer(text="Для старта игры вызови !mafia_go (нужно 4+ игрока)")
     elif MAFIA_DATA["phase"] == "night":
-        embed.set_footer(text="Когда все сделали ход — вызови !morning")
+        pending = _mafia_pending_actions()
+        footer = f"Ожидаем: {', '.join(pending)}" if pending else "Все сделали ход, переход скоро..."
+        embed.set_footer(text=footer)
     elif MAFIA_DATA["phase"] == "day":
-        embed.set_footer(text="Голосуй !mafia_vote <номер>, итоги — !mafia_end_day")
+        alive_now, _ = _mafia_numbered_list(include_bot=True)
+        alive_ids = {uid for uid, _ in alive_now}
+        voted = len(set(MAFIA_DATA["votes"].keys()) & alive_ids)
+        embed.set_footer(text=f"Голосуй !mafia_vote <номер> | Проголосовало: {voted}/{len(alive_ids)}")
 
     await ctx.send(embed=embed)
 
