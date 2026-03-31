@@ -23,6 +23,8 @@ import tempfile
 from collections import defaultdict
 from discord.sinks import Sink as DiscordSink
 
+load_dotenv()
+
 # ============================================================
 #  BOT SETUP
 # ============================================================
@@ -3244,15 +3246,16 @@ async def on_voice_state_update(member, before, after):
 
 
 # ============================================================
-#  TEXT-TO-VOICE AI (БЕЗ ПРОСЛУШКИ, ТОЛЬКО ОЗВУЧКА)
+#  TEXT-TO-VOICE AI (ЧЕРЕЗ GROQ)
 # ============================================================
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 TTS_VOICE = os.getenv("TTS_VOICE", "ru-RU-SvetlanaNeural")
 AI_SYSTEM_PROMPT = os.getenv("AI_SYSTEM_PROMPT",
                              "Ты голосовой ИИ-ассистент в Discord. Отвечай кратко и по-дружески, "
-                             "как в живом разговоре. Без Markdown-форматирования.")
+                             "как в живом разговоре. Без Markdown-форматирования. Отвечай на русском языке.")
 
-_anthropic_client = anthropic_lib.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+# Инициализируем клиент Groq
+_groq_client = GroqClient(api_key=os.getenv("GROQ_API_KEY", ""))
 
 # guild_id → history (список сообщений)
 _chat_histories = defaultdict(list)
@@ -3267,12 +3270,10 @@ _chat_histories = defaultdict(list)
 async def ask_ai(ctx, *, question: str):
     await ctx.message.delete()
 
-    # 1. Проверяем, в голосовом ли канале пользователь
     if not ctx.author.voice:
         await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5)
         return
 
-    # 2. Подключаем бота, если он еще не там
     vc = ctx.guild.voice_client
     if not vc or not vc.is_connected():
         try:
@@ -3281,39 +3282,36 @@ async def ask_ai(ctx, *, question: str):
             await ctx.send(f"❌ Ошибка подключения: {e}", delete_after=5)
             return
 
-    # Отправляем сообщение ожидания
     status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *AI думает...*")
 
     history = _chat_histories[ctx.guild.id]
     history.append({"role": "user", "content": question})
 
     try:
-        # 3. Отправляем запрос в Claude (используем самую стабильную рабочую модель)
+        # Для Groq системный промпт добавляется первым сообщением в список
+        messages_for_api = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + history
+
+        # Отправляем запрос в Groq (используем мощную и быструю Llama 3 70B)
         reply_obj = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: _anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+            lambda: _groq_client.chat.completions.create(
+                model="llama3-70b-8192",
                 max_tokens=400,
-                system=AI_SYSTEM_PROMPT,
-                messages=history,
-            ),
+                messages=messages_for_api,
+            )
         )
-        reply = reply_obj.content[0].text.strip()
+        reply = reply_obj.choices[0].message.content.strip()
         history.append({"role": "assistant", "content": reply})
 
-        # Обновляем текст в чате
         await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n🤖 **AI**: {reply}")
 
-        # 4. Генерируем озвучку (TTS)
         tts_path = tempfile.mktemp(suffix=".mp3")
         communicate = edge_tts.Communicate(reply, TTS_VOICE)
         await communicate.save(tts_path)
 
-        # Ждем, пока бот договорит предыдущую фразу (если он уже что-то читает)
         while vc.is_playing():
             await asyncio.sleep(0.5)
 
-        # 5. Воспроизводим звук
         if vc.is_connected():
             def after_play(e):
                 try:
@@ -3658,8 +3656,6 @@ async def on_member_join(member):
 # ============================================================
 #  RUN
 # ============================================================
-load_dotenv()
-
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not TOKEN:
     raise ValueError("DISCORD_BOT_TOKEN не найден в .env файле!")
