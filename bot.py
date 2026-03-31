@@ -13,7 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 import time
 import pytz
 import re
-import whisper
+from groq import Groq as GroqClient
 import edge_tts
 import anthropic as anthropic_lib
 import audioop
@@ -3314,11 +3314,17 @@ class VoiceSession:
                 tmp_path = tmp.name
 
             # Whisper STT
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: _whisper_model.transcribe(tmp_path, language="ru")
-            )
+            with open(tmp_path, "rb") as audio_file:
+                transcription = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: _groq_client_stt.audio.transcriptions.create(
+                        file=("audio.wav", audio_file, "audio/wav"),
+                        model="whisper-large-v3",
+                        language="ru",
+                    )
+                )
             os.unlink(tmp_path)
-            text = result["text"].strip()
+            text = transcription.text.strip()
             if not text:
                 return
 
@@ -3819,9 +3825,8 @@ AI_SYSTEM_PROMPT   = os.getenv("AI_SYSTEM_PROMPT",
     "Ты голосовой ИИ-ассистент в Discord. Отвечай кратко и по-дружески, "
     "как в живом разговоре. Без Markdown-форматирования.")
 
-print("⏳ Загрузка Whisper…")
-_whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
-print(f"✅ Whisper '{WHISPER_MODEL_NAME}' загружен")
+_groq_client_stt = GroqClient(api_key=os.getenv("GROQ_API_KEY", ""))
+print("✅ Groq Whisper API готов")
 
 _anthropic_client = anthropic_lib.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 

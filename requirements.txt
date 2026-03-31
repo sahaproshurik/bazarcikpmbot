@@ -6,5 +6,5 @@ pytz
 gtts
 edge-tts
 anthropic
-openai-whisper
+groq
 PyNaCl
