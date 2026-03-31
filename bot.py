@@ -79,6 +79,208 @@ server_effects    = load_json(SERVER_EFF_FILE)
 player_warns      = load_json(WARNS_FILE)
 USER_ORDERS_COMPLETED = load_json(ORDERS_FILE)
 
+# --- СОСТОЯНИЕ МАФИИ ---
+MAFIA_DATA = {
+    "is_running": False,
+    "phase": "waiting",  # waiting, night, day
+    "players": {},       # {user_id: {"role": str, "is_alive": bool, "name": str}}
+    "actions": {"kill": None, "heal": None, "check": None},
+    "votes": {},         # {voter_id: target_id}
+    "night_count": 0
+}
+
+# Роли: Мафия, Доктор, Комиссар, Мирный
+
+async def mafia_ai_narrator(prompt_type, context_data=""):
+    """Генерация текста ведущего через Groq"""
+    prompts = {
+        "morning": f"Наступило утро в городе. Итоги ночи: {context_data}. Расскажи об этом очень кратко, смешно и в стиле Bazarcik PM. Если кто-то умер, придумай нелепую причину. Упомяни, что Юра Яковенко в безопасности.",
+        "win": f"Игра окончена! Победили: {context_data}. Прокомментируй это дерзко и ярко.",
+        "ai_defense": f"Ты играешь в мафию. Твоя роль: {context_data}. Тебя подозревают. Оправдайся очень дерзко, наезжай на других и защищай Юру Яковенко. Без Markdown!"
+    }
+
+    try:
+        response = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "system", "content": AI_SYSTEM_PROMPT},
+                          {"role": "user", "content": prompts[prompt_type]}],
+                max_tokens=300
+            )
+        )
+        return response.choices[0].message.content.strip()
+    except:
+        return "Произошла техническая шоколадка, но город проснулся!"
+
+
+async def mafia_say(ctx, text):
+    """Озвучка текста ведущего в войс"""
+    await ctx.send(f"🎙️ **Ведущий:** {text}")
+    vc = ctx.guild.voice_client
+    if vc and vc.is_connected():
+        tts_path = tempfile.mktemp(suffix=".mp3")
+        await edge_tts.Communicate(text, TTS_VOICE).save(tts_path)
+        while vc.is_playing(): await asyncio.sleep(0.5)
+        vc.play(discord.FFmpegPCMAudio(tts_path),
+                after=lambda e: os.unlink(tts_path) if os.path.exists(tts_path) else None)
+
+
+# --- КОМАНДЫ МАФИИ ---
+
+class MafiaJoinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(label="Вступить в игру", style=discord.ButtonStyle.green)
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "waiting":
+            return await interaction.response.send_message("Набор закрыт!", ephemeral=True)
+        uid = interaction.user.id
+        if uid not in MAFIA_DATA["players"]:
+            MAFIA_DATA["players"][uid] = {"role": None, "is_alive": True, "name": interaction.user.display_name}
+            await interaction.response.send_message(f"✅ {interaction.user.display_name}, ты в игре!", ephemeral=True)
+        else:
+            await interaction.response.send_message("Ты уже в списке!", ephemeral=True)
+
+
+@bot.command(name="mafia_start")
+async def mafia_start(ctx):
+    """Начать сбор игроков"""
+    await ctx.message.delete()
+    if MAFIA_DATA["is_running"]: return await ctx.send("Игра уже идет!")
+
+    MAFIA_DATA["is_running"] = True
+    MAFIA_DATA["phase"] = "waiting"
+    MAFIA_DATA["players"] = {bot.user.id: {"role": "Игрок-ИИ", "is_alive": True, "name": "BazarčikPM Bot"}}
+
+    view = MafiaJoinView()
+    await ctx.send("🕵️‍♂️ **МАФИЯ НА БАЗАРЧИКЕ!**\nЖмите кнопку, чтобы зайти. Нужно минимум 4 человека (включая бота).",
+                   view=view)
+
+
+@bot.command(name="mafia_go")
+async def mafia_go(ctx):
+    """Раздать роли и начать первую ночь"""
+    if len(MAFIA_DATA["players"]) < 3:
+        return await ctx.send("Мало народу! Юре скучно играть втроем.")
+
+    uids = [uid for uid in MAFIA_DATA["players"].keys() if uid != bot.user.id]
+    random.shuffle(uids)
+
+    # Распределение ролей (минимум 1 мафия, 1 док, 1 ком)
+    roles_pool = ["Мафия", "Доктор", "Комиссар"] + ["Мирный"] * (len(uids) - 3)
+    random.shuffle(roles_pool)
+
+    for i, uid in enumerate(uids):
+        role = roles_pool[i]
+        MAFIA_DATA["players"][uid]["role"] = role
+        user = bot.get_user(uid)
+        try:
+            await user.send(f"🎭 Твоя роль в Мафии: **{role}**")
+        except:
+            pass
+
+    # Бот тоже получает скрытую роль для себя
+    MAFIA_DATA["players"][bot.user.id]["role"] = random.choice(["Мафия", "Мирный"])
+
+    MAFIA_DATA["phase"] = "night"
+    await ctx.send("🌑 **Наступила ночь.** Мафия, Доктор и Комиссар, жду ваши цели в ЛС!")
+    await ctx.send("Бот ушел думать над своими черными делами...")
+
+
+# --- ЛС ОБРАБОТКА (Night Actions) ---
+@bot.command(name="kill")
+async def mafia_kill(ctx, target: discord.Member):
+    if ctx.guild: return
+    uid = ctx.author.id
+    if MAFIA_DATA["players"].get(uid, {}).get("role") == "Мафия":
+        MAFIA_DATA["actions"]["kill"] = target.id
+        await ctx.send(f"🔪 Цель выбрана: {target.display_name}")
+
+
+@bot.command(name="heal")
+async def mafia_heal(ctx, target: discord.Member):
+    if ctx.guild: return
+    uid = ctx.author.id
+    if MAFIA_DATA["players"].get(uid, {}).get("role") == "Доктор":
+        MAFIA_DATA["actions"]["heal"] = target.id
+        await ctx.send(f"💊 Ты вылечишь: {target.display_name}")
+
+
+# --- ПЕРЕХОД К ДНЮ ---
+@bot.command(name="morning")
+async def mafia_morning(ctx):
+    if MAFIA_DATA["phase"] != "night": return
+
+    kill_id = MAFIA_DATA["actions"]["kill"]
+    heal_id = MAFIA_DATA["actions"]["heal"]
+
+    result_text = "Никто не погиб."
+    if kill_id and kill_id != heal_id:
+        MAFIA_DATA["players"][kill_id]["is_alive"] = False
+        victim_name = MAFIA_DATA["players"][kill_id]["name"]
+        result_text = f"Был зверски ликвидирован {victim_name}."
+
+    # Сброс действий
+    MAFIA_DATA["actions"] = {"kill": None, "heal": None, "check": None}
+    MAFIA_DATA["phase"] = "day"
+
+    # ИИ рассказывает историю
+    story = await mafia_ai_narrator("morning", result_text)
+    await mafia_say(ctx, story)
+
+    # Бот вкидывает свое мнение как игрок
+    ai_role = MAFIA_DATA["players"][bot.user.id]["role"]
+    ai_opinion = await mafia_ai_narrator("ai_defense", ai_role)
+    await ctx.send(f"🤖 **{bot.user.name} говорит:** {ai_opinion}")
+
+
+@bot.command(name="vote")
+async def mafia_vote(ctx, target: discord.Member):
+    if MAFIA_DATA["phase"] != "day": return
+    MAFIA_DATA["votes"][ctx.author.id] = target.id
+    await ctx.send(f"🗳️ {ctx.author.display_name} проголосовал против {target.display_name}")
+
+
+@bot.command(name="mafia_end_day")
+async def mafia_end_day(ctx):
+    if not MAFIA_DATA["votes"]: return
+
+    # Считаем голоса
+    from collections import Counter
+    counts = Counter(MAFIA_DATA["votes"].values())
+    killed_id = counts.most_common(1)[0][0]
+
+    name = MAFIA_DATA["players"][killed_id]["name"]
+    MAFIA_DATA["players"][killed_id]["is_alive"] = False
+    MAFIA_DATA["votes"] = {}
+
+    await ctx.send(
+        f"⚖️ Большинством голосов город решил казнить **{name}**. Он был: {MAFIA_DATA['players'][killed_id]['role']}")
+
+    # Проверка победы
+    maf_alive = [p for p in MAFIA_DATA["players"].values() if p["role"] == "Мафия" and p["is_alive"]]
+    civ_alive = [p for p in MAFIA_DATA["players"].values() if p["role"] != "Мафия" and p["is_alive"]]
+
+    if not maf_alive:
+        msg = await mafia_ai_narrator("win", "Мирные жители и Юра!")
+        await mafia_say(ctx, msg)
+        MAFIA_DATA["is_running"] = False
+    elif len(maf_alive) >= len(civ_alive):
+        msg = await mafia_ai_narrator("win", "МАФИЯ!")
+        await mafia_say(ctx, msg)
+        MAFIA_DATA["is_running"] = False
+    else:
+        MAFIA_DATA["phase"] = "night"
+        await ctx.send("🌑 Снова ночь... Напишите !kill или !heal мне в ЛС.")
+
+
+@bot.command(name="mafia_stop")
+async def mafia_stop(ctx):
+    MAFIA_DATA["is_running"] = False
+    await ctx.send("Игра принудительно остановлена.")
+
 def save_funds():       save_json(FUNDS_FILE, player_funds)
 def save_loans():       save_json(LOANS_FILE, player_loans)
 def save_businesses():  save_json(BUSINESS_FILE, player_businesses)
@@ -3099,7 +3301,7 @@ AUTO_CHANNELS = {
     1472756792491643031: 1402748456883454097,
 }
 
-YOUR_USER_ID = 539475816342487040
+YOUR_USER_ID = 878322259469688832
 AUDIO_FILE   = os.path.abspath("greeting.mp3")  # абсолютный путь
 
 def generate_greeting():
