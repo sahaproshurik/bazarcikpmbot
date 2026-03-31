@@ -3257,21 +3257,20 @@ AI_SYSTEM_PROMPT = os.getenv("AI_SYSTEM_PROMPT",
 # Инициализируем клиент Groq
 _groq_client = GroqClient(api_key=os.getenv("GROQ_API_KEY", ""))
 
-# guild_id → history (список сообщений)
-_chat_histories = defaultdict(list)
+_shared_histories = defaultdict(list)
 
 
 @bot.command(
     name="ask",
     aliases=["a", "спроси"],
-    brief="Задать вопрос AI (ответ текстом и голосом)",
-    help="Напиши вопрос, бот сгенерирует ответ и озвучит его в голосовом канале.\n\nИспользование: `!ask Привет, расскажи анекдот`"
+    brief="Общий чат с AI (бот помнит всех)",
+    help="Напиши вопрос, и бот ответит в общем контексте чата, различая участников."
 )
 async def ask_ai(ctx, *, question: str):
     await ctx.message.delete()
 
     if not ctx.author.voice:
-        await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5)
+        await ctx.send("❌ Зайди в войс, чтобы я мог ответить голосом!", delete_after=5)
         return
 
     vc = ctx.guild.voice_client
@@ -3282,16 +3281,23 @@ async def ask_ai(ctx, *, question: str):
             await ctx.send(f"❌ Ошибка подключения: {e}", delete_after=5)
             return
 
-    status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *AI думает...*")
+    status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *Пишет ответ...*")
 
-    # ВАЖНО: Теперь мы берём историю конкретного пользователя (ctx.author.id)
-    history = _chat_histories[ctx.author.id]
-    history.append({"role": "user", "content": question})
+    # Берем общую историю сервера
+    history = _shared_histories[ctx.guild.id]
+
+    # ВАЖНО: Добавляем имя пользователя прямо в текст сообщения для ИИ
+    # Так бот будет видеть: "[Ivan]: Привет" и "[Dmitry]: Кто я?"
+    user_message = f"[{ctx.author.display_name}]: {question}"
+    history.append({"role": "user", "content": user_message})
+
+    # Ограничиваем историю (например, последние 20 сообщений), чтобы бот не тупил
+    if len(history) > 20:
+        history.pop(0)
 
     try:
         messages_for_api = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + history
 
-        # Отправляем запрос в Groq
         reply_obj = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: _groq_client.chat.completions.create(
@@ -3301,10 +3307,13 @@ async def ask_ai(ctx, *, question: str):
             )
         )
         reply = reply_obj.choices[0].message.content.strip()
+
+        # Сохраняем ответ бота в историю
         history.append({"role": "assistant", "content": reply})
 
         await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n🤖 **AI**: {reply}")
 
+        # Озвучка (TTS)
         tts_path = tempfile.mktemp(suffix=".mp3")
         communicate = edge_tts.Communicate(reply, TTS_VOICE)
         await communicate.save(tts_path)
@@ -3348,12 +3357,11 @@ async def voice_leave(ctx):
         await ctx.send("❌ Я не в канале.", delete_after=5)
 
 
-@bot.command(name="aiclear", brief="Очистить свою личную память диалога с AI")
+@bot.command(name="aiclear", brief="Очистить общую память чата")
 async def voice_clear(ctx):
     await ctx.message.delete()
-    # Очищаем память только для того, кто написал команду
-    _chat_histories[ctx.author.id].clear()
-    await ctx.send(f"🗑️ {ctx.author.mention}, твоя личная история диалога забыта. Начинаем с чистого листа!", delete_after=5)
+    _shared_histories[ctx.guild.id].clear()
+    await ctx.send("🗑️ Общая память чата очищена. Бот всех забыл!")
 
 
 @bot.command(name="aivoice", brief="Сменить голос AI")
