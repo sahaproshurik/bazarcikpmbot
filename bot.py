@@ -236,7 +236,7 @@ async def mafia_morning(ctx):
     await ctx.send(f"🤖 **{bot.user.name} говорит:** {ai_opinion}")
 
 
-@bot.command(name="vote")
+@bot.command(name="mafia_vote")
 async def mafia_vote(ctx, target: discord.Member):
     if MAFIA_DATA["phase"] != "day": return
     MAFIA_DATA["votes"][ctx.author.id] = target.id
