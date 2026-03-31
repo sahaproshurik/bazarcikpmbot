@@ -4,8 +4,7 @@ Pillow
 python-dotenv
 pytz
 gtts
-whisper
-edge_tts
+edge-tts
 anthropic
 openai-whisper
 PyNaCl
