@@ -1,4 +1,4 @@
-py-cord
+py-cord[voice]
 apscheduler
 Pillow
 python-dotenv

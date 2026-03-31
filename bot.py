@@ -3161,7 +3161,7 @@ async def on_voice_state_update(member, before, after):
             # Принудительно отключаем все голосовые соединения
             for vc_old in list(bot.voice_clients):
                 try:
-                    await vc_old.disconnect(force=True)
+                    await vc_old.disconnect(force=False)
                 except Exception:
                     pass
             await asyncio.sleep(2)
