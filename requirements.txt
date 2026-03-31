@@ -4,3 +4,8 @@ Pillow
 python-dotenv
 pytz
 gtts
+whisper
+edge_tts
+anthropic
+openai-whisper
+PyNaCl
