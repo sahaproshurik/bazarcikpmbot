@@ -6,7 +6,7 @@ from collections import defaultdict
 import discord
 from discord.ext import commands
 import edge_tts
-from config import _groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
+from config import get_groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
 from data import AUTO_CHANNELS, YOUR_USER_ID
 
 AUDIO_FILE = os.path.abspath("greeting.mp3")
@@ -50,15 +50,15 @@ class VoiceAICog(commands.Cog):
         history    = self._shared_histories[ctx.guild.id]
         user_message = f"[{ctx.author.display_name}]: {question}"
         history.append({"role": "user", "content": user_message})
-        if len(history) > 20:
+        if len(history) > 6:
             history.pop(0)
 
         try:
             messages_for_api = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + history
             reply_obj = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: _groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                lambda: get_groq_client().chat.completions.create(
+                    model="llama-3.1-8b-instant",
                     max_tokens=400,
                     messages=messages_for_api,
                 )

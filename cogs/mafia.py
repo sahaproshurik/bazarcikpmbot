@@ -5,7 +5,7 @@ import tempfile
 import discord
 from discord.ext import commands
 import edge_tts
-from config import _groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
+from config import get_groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
 from data import MAFIA_DATA
 
 
@@ -49,8 +49,8 @@ async def mafia_ai_narrator(prompt_type: str, context_data: str = "") -> str:
     try:
         response = await asyncio.get_event_loop().run_in_executor(
             None,
-            lambda: _groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            lambda: get_groq_client().chat.completions.create(
+                model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": AI_SYSTEM_PROMPT},
                     {"role": "user",   "content": prompts.get(prompt_type, context_data)},
