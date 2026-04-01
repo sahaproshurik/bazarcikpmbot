@@ -257,4 +257,4 @@ class BusinessCog(commands.Cog):
 
 
 async def setup(bot):
-    await bot.add_cog(BusinessCog(bot))
+    bot.add_cog(BusinessCog(bot))
