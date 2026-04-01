@@ -256,5 +256,5 @@ class BusinessCog(commands.Cog):
                 except Exception: pass
 
 
-async def setup(bot):
+def setup(bot):
     bot.add_cog(BusinessCog(bot))
