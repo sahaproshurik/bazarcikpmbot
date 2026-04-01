@@ -58,7 +58,7 @@ class VoiceAICog(commands.Cog):
             reply_obj = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: get_groq_client().chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model="llama-3.3-70b-versatile",
                     max_tokens=400,
                     messages=messages_for_api,
                 )
