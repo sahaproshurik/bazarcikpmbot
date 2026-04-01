@@ -149,61 +149,61 @@ class VoiceAICog(commands.Cog):
             return
 
         # === Приветствие Юры ===
-        # if (member.id == YOUR_USER_ID
-        #         and after.channel is not None
-        #         and (before.channel is None or before.channel.id != after.channel.id)):
-        #
-        #     if _greeting_lock.locked():
-        #         return
-        #
-        #     async with _greeting_lock:
-        #         await asyncio.sleep(1)
-        #         channel = member.voice.channel if member.voice else None
-        #         if channel is None: return
-        #
-        #         for vc_old in list(self.bot.voice_clients):
-        #             try: await vc_old.disconnect(force=False)
-        #             except Exception: pass
-        #         await asyncio.sleep(2)
-        #
-        #         vc = None
-        #         greeted = False
-        #         try:
-        #             vc = await asyncio.wait_for(channel.connect(reconnect=False), timeout=15.0)
-        #             await asyncio.sleep(1)
-        #
-        #             if not os.path.exists(AUDIO_FILE):
-        #                 generate_greeting()
-        #
-        #             finished = asyncio.Event()
-        #             def after_play(error):
-        #                 if error: print(f"[AUDIO] Ошибка: {error}")
-        #                 self.bot.loop.call_soon_threadsafe(finished.set)
-        #
-        #             source = discord.FFmpegPCMAudio(AUDIO_FILE, executable="ffmpeg", options="-loglevel panic")
-        #             vc.play(source, after=after_play)
-        #
-        #             try:
-        #                 await asyncio.wait_for(finished.wait(), timeout=15.0)
-        #                 greeted = True
-        #             except asyncio.TimeoutError:
-        #                 print("[AUDIO] Таймаут воспроизведения")
-        #
-        #         except asyncio.TimeoutError:
-        #             print("[AUDIO] Таймаут подключения!")
-        #         except Exception as e:
-        #             import traceback; print(f"[AUDIO] Ошибка: {e}"); traceback.print_exc()
-        #         finally:
-        #             if vc and vc.is_connected():
-        #                 await vc.disconnect(force=True)
-        #
-        #         if not greeted:
-        #             ch = member.guild.get_channel(channel.id)
-        #             if ch:
-        #                 for m in list(ch.members):
-        #                     if m.id != YOUR_USER_ID:
-        #                         try: await m.move_to(None)
-        #                         except Exception: pass
+        if (member.id == YOUR_USER_ID
+                and after.channel is not None
+                and (before.channel is None or before.channel.id != after.channel.id)):
+
+            if _greeting_lock.locked():
+                return
+
+            async with _greeting_lock:
+                await asyncio.sleep(1)
+                channel = member.voice.channel if member.voice else None
+                if channel is None: return
+
+                for vc_old in list(self.bot.voice_clients):
+                    try: await vc_old.disconnect(force=False)
+                    except Exception: pass
+                await asyncio.sleep(2)
+
+                vc = None
+                greeted = False
+                try:
+                    vc = await asyncio.wait_for(channel.connect(reconnect=False), timeout=15.0)
+                    await asyncio.sleep(1)
+
+                    if not os.path.exists(AUDIO_FILE):
+                        generate_greeting()
+
+                    finished = asyncio.Event()
+                    def after_play(error):
+                        if error: print(f"[AUDIO] Ошибка: {error}")
+                        self.bot.loop.call_soon_threadsafe(finished.set)
+
+                    source = discord.FFmpegPCMAudio(AUDIO_FILE, executable="ffmpeg", options="-loglevel panic")
+                    vc.play(source, after=after_play)
+
+                    try:
+                        await asyncio.wait_for(finished.wait(), timeout=15.0)
+                        greeted = True
+                    except asyncio.TimeoutError:
+                        print("[AUDIO] Таймаут воспроизведения")
+
+                except asyncio.TimeoutError:
+                    print("[AUDIO] Таймаут подключения!")
+                except Exception as e:
+                    import traceback; print(f"[AUDIO] Ошибка: {e}"); traceback.print_exc()
+                finally:
+                    if vc and vc.is_connected():
+                        await vc.disconnect(force=True)
+
+                if not greeted:
+                    ch = member.guild.get_channel(channel.id)
+                    if ch:
+                        for m in list(ch.members):
+                            if m.id != YOUR_USER_ID:
+                                try: await m.move_to(None)
+                                except Exception: pass
 
         # === Удаление пустого канала ===
         if before.channel:
