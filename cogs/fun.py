@@ -140,5 +140,5 @@ class FunCog(commands.Cog):
         await ctx.send("@here", embed=embed)
 
 
-async def setup(bot):
-    await bot.add_cog(FunCog(bot))
+def setup(bot):
+    bot.add_cog(FunCog(bot))

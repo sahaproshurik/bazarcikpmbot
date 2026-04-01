@@ -217,5 +217,5 @@ class GamesCog(commands.Cog):
             await ctx.send(f"🎡 {ctx.author.mention} Выпало **{number}** {cemj}. Проигрыш! Баланс: **{player_funds[uid]:,}** 💰")
 
 
-async def setup(bot):
-    await bot.add_cog(GamesCog(bot))
+def setup(bot):
+    bot.add_cog(GamesCog(bot))

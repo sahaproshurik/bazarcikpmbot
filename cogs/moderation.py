@@ -139,5 +139,5 @@ class ModerationCog(commands.Cog):
         await ctx.send(f"🗑️ Удалено **{deleted}** сообщений от {member.mention} за {days} дней.", delete_after=5)
 
 
-async def setup(bot):
-    await bot.add_cog(ModerationCog(bot))
+def setup(bot):
+    bot.add_cog(ModerationCog(bot))

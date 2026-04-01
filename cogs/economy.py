@@ -259,5 +259,5 @@ class EconomyCog(commands.Cog):
         await ctx.send(f"✅ Баланс {member.mention} установлен: **{amount:,}** 💰")
 
 
-async def setup(bot):
-    await bot.add_cog(EconomyCog(bot))
+def setup(bot):
+    bot.add_cog(EconomyCog(bot))

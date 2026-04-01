@@ -159,5 +159,5 @@ class LoansCog(commands.Cog):
                     pass
 
 
-async def setup(bot):
-    await bot.add_cog(LoansCog(bot))
+def setup(bot):
+    bot.add_cog(LoansCog(bot))

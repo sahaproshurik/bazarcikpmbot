@@ -601,5 +601,5 @@ class MafiaCog(commands.Cog):
         await ctx.send("🛑 Игра в Мафию принудительно остановлена.")
 
 
-async def setup(bot):
-    await bot.add_cog(MafiaCog(bot))
+def setup(bot):
+    bot.add_cog(MafiaCog(bot))

@@ -218,5 +218,5 @@ class VoiceAICog(commands.Cog):
                 except Exception as e: print(f"[ERROR] delete channel: {e}")
 
 
-async def setup(bot):
-    await bot.add_cog(VoiceAICog(bot))
+def setup(bot):
+    bot.add_cog(VoiceAICog(bot))

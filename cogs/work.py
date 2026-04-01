@@ -325,5 +325,5 @@ class WorkCog(commands.Cog):
             order_history.clear()
 
 
-async def setup(bot):
-    await bot.add_cog(WorkCog(bot))
+def setup(bot):
+    bot.add_cog(WorkCog(bot))

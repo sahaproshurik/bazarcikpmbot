@@ -159,5 +159,5 @@ class ShopCog(commands.Cog):
         await ctx.send(f"🎣 {ctx.author.mention} поймал **{catch}** и получил **{reward}** 💰!")
 
 
-async def setup(bot):
-    await bot.add_cog(ShopCog(bot))
+def setup(bot):
+    bot.add_cog(ShopCog(bot))
