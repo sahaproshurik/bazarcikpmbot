@@ -1,4 +1,5 @@
 py-cord[voice]
+git+https://github.com/Pycord-Development/pycord.git
 PyNaCl
 apscheduler
 Pillow
