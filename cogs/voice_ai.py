@@ -85,7 +85,7 @@ class VoiceAICog(commands.Cog):
 
     @commands.command(name="join", aliases=["j"], brief="Позвать бота в голосовой канал")
     async def voice_join(self, ctx):
-        # await ctx.message.delete()
+        await ctx.message.delete()
         if not ctx.author.voice:
             await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5); return
         if ctx.guild.voice_client:
