@@ -26,7 +26,7 @@ class PetitionsCog(commands.Cog):
 
         petitions = self._load()
         pid      = len(petitions) + 1
-        required = max(1, int(ctx.guild.member_count * 0.1) - 1)
+        required = max(1, int(len(ctx.channel.members) * 0.1) - 1)
         data = {
             "id": pid, "author": ctx.author.id, "text": text,
             "votes": 0, "voters": [], "status": "active",
