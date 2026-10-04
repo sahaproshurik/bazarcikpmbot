@@ -2,23 +2,26 @@
 cogs/spt_status.py — следит за статусом SPT-сервера и меняет статус бота.
 
 Бот не принимает входящих подключений и ничего не слушает — он просто
-раз в 30 секунд читает маленький текстовый файл (Gist на GitHub), в который
+раз в 60 секунд спрашивает у GitHub API содержимое gist-файла, в который
 скрипт-лаунчер на ПК пишет "online"/"offline" при старте и остановке
-SPT-сервера.
+SPT-сервера. Используется именно API (api.github.com), а не "сырая"
+raw-ссылка — у raw-ссылок гистов свой CDN-кэш, который может отдавать
+устаревшее значение по несколько минут.
 
-Нужна переменная окружения SPT_STATUS_GIST_URL — сырая (raw) ссылка на
-gist-файл, вида:
-https://gist.githubusercontent.com/ТВОЙ_НИК/GIST_ID/raw/status.txt
+Нужна переменная окружения SPT_STATUS_GIST_ID — это просто ID твоего
+gist'а (кусок из адреса https://gist.github.com/ТВОЙ_НИК/ВОТ_ЭТО_ID).
 Добавь её в настройках хостинга (там же, где DISCORD_BOT_TOKEN).
+Токен GitHub боту не нужен — чтение публичного/secret-гиста по ID не
+требует авторизации, только запись (её делает скрипт на ПК).
 """
 
 import os
-import time
 import discord
 import aiohttp
 from discord.ext import commands, tasks
 
-SPT_STATUS_GIST_URL = os.getenv("SPT_STATUS_GIST_URL", "")
+GIST_ID = os.getenv("SPT_STATUS_GIST_ID", "")
+GIST_FILENAME = os.getenv("SPT_STATUS_GIST_FILENAME", "status.txt")
 
 
 class SPTStatus(commands.Cog):
@@ -30,19 +33,28 @@ class SPTStatus(commands.Cog):
     def cog_unload(self):
         self.check_spt_status.cancel()
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=60)
     async def check_spt_status(self):
-        if not SPT_STATUS_GIST_URL:
-            print("[spt_status] SPT_STATUS_GIST_URL не задан, пропускаю проверку")
+        if not GIST_ID:
+            print("[spt_status] SPT_STATUS_GIST_ID не задан, пропускаю проверку")
             return
 
-        url = f"{SPT_STATUS_GIST_URL}?t={int(time.time())}"  # анти-кэш GitHub CDN
+        url = f"https://api.github.com/gists/{GIST_ID}"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    text = (await resp.text()).strip().lower()
+                    if resp.status != 200:
+                        print(f"[spt_status] GitHub API ответил {resp.status}")
+                        return
+                    data = await resp.json()
         except Exception as e:
             print(f"[spt_status] Не удалось проверить статус: {e}")
+            return
+
+        try:
+            text = data["files"][GIST_FILENAME]["content"].strip().lower()
+        except (KeyError, TypeError):
+            print(f"[spt_status] Не нашёл файл '{GIST_FILENAME}' в gist")
             return
 
         if text not in ("online", "offline") or text == self.last_state:
