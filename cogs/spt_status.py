@@ -30,7 +30,7 @@ GITHUB_TOKEN = os.getenv("SPT_STATUS_GITHUB_TOKEN", "")  # опциональн�
 
 # Без токена безопасный минимум — 60 секунд (лимит 60 запросов/час).
 # С токеном лимит 5000/час, можно смело уменьшать это число.
-CHECK_INTERVAL_SECONDS = 5 if GITHUB_TOKEN else 60
+CHECK_INTERVAL_SECONDS = 10 if GITHUB_TOKEN else 60
 
 
 class SPTStatus(commands.Cog):
