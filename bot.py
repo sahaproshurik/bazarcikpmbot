@@ -22,6 +22,7 @@ import wave
 import tempfile
 from collections import defaultdict
 from discord.sinks import Sink as DiscordSink
+import aiohttp
 
 load_dotenv()
 
@@ -35,6 +36,47 @@ intents.voice_states = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
+
+# ============================================================
+#  SPT SERVER STATUS WATCHER
+# ============================================================
+# Бот сам ничего не отправляет на ПК и не слушает входящие подключения —
+# он просто периодически читает маленький текстовый файл (Gist на GitHub),
+# в который скрипт-лаунчер на ПК пишет "online"/"offline" при старте и
+# остановке SPT-сервера. Это работает даже если ПК виден только внутри
+# ZeroTier, потому что и ПК, и бот обращаются наружу сами — входящие
+# подключения никому не нужны.
+SPT_STATUS_GIST_URL = os.getenv("SPT_STATUS_GIST_URL", "")  # сырая (raw) ссылка на gist-файл
+_spt_status_cache = {"state": None}
+
+@tasks.loop(seconds=30)
+async def check_spt_status():
+    if not SPT_STATUS_GIST_URL:
+        return
+    url = f"{SPT_STATUS_GIST_URL}?t={int(time.time())}"  # анти-кэш GitHub CDN
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                text = (await resp.text()).strip().lower()
+    except Exception as e:
+        print(f"[spt_status] Не удалось проверить статус: {e}")
+        return
+
+    if text not in ("online", "offline") or text == _spt_status_cache["state"]:
+        return
+
+    _spt_status_cache["state"] = text
+    if text == "online":
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=discord.Game(name="SPT сервер: 🟢 Онлайн")
+        )
+    else:
+        await bot.change_presence(
+            status=discord.Status.idle,
+            activity=discord.Game(name="SPT сервер: 🔴 Выключен")
+        )
+    print(f"[spt_status] Статус сервера обновлён: {text}")
 
 # ============================================================
 #  UNIVERSAL JSON HELPERS
@@ -4442,6 +4484,7 @@ async def on_ready():
     daily_business_income.start()
     tax_deduction_task.start()
     weekend_competition.start()
+    check_spt_status.start()
     bot.loop.create_task(update_priemer())
 
 @bot.event
