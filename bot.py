@@ -69,12 +69,12 @@ async def check_spt_status():
     if text == "online":
         await bot.change_presence(
             status=discord.Status.online,
-            activity=discord.Game(name="SPT сервер: 🟢 Онлайн")
+            activity=discord.Game(name="SPT Server: 🟢 ON")
         )
     else:
         await bot.change_presence(
             status=discord.Status.idle,
-            activity=discord.Game(name="SPT сервер: 🔴 Выключен")
+            activity=discord.Game(name="SPT Server: 🔴 OFF")
         )
     print(f"[spt_status] Статус сервера обновлён: {text}")
 
