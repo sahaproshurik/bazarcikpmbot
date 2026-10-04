@@ -38,6 +38,7 @@ COGS = [
     "cogs.petitions",
     "cogs.voice_ai",
     "cogs.mafia",
+    "cogs.spt_status",
 ]
 
 # ── Events ───────────────────────────────────────────────────
