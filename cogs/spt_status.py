@@ -52,12 +52,12 @@ class SPTStatus(commands.Cog):
         if text == "online":
             await self.bot.change_presence(
                 status=discord.Status.online,
-                activity=discord.Game(name="SPT сервер: 🟢 Онлайн"),
+                activity=discord.Game(name="🟢 SPT Server ONLINE"),
             )
         else:
             await self.bot.change_presence(
                 status=discord.Status.idle,
-                activity=discord.Game(name="SPT сервер: 🔴 Выключен"),
+                activity=discord.Game(name="🔴 SPT Server OFFLINE"),
             )
         print(f"[spt_status] Статус сервера обновлён: {text}")
 
