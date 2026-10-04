@@ -11,8 +11,12 @@ raw-ссылка — у raw-ссылок гистов свой CDN-кэш, ко�
 Нужна переменная окружения SPT_STATUS_GIST_ID — это просто ID твоего
 gist'а (кусок из адреса https://gist.github.com/ТВОЙ_НИК/ВОТ_ЭТО_ID).
 Добавь её в настройках хостинга (там же, где DISCORD_BOT_TOKEN).
-Токен GitHub боту не нужен — чтение публичного/secret-гиста по ID не
-требует авторизации, только запись (её делает скрипт на ПК).
+
+Без токена чтение ограничено 60 запросами в час от GitHub — этого хватает
+на проверку раз в 60 секунд. Если хочешь проверять чаще, добавь ещё одну
+переменную окружения SPT_STATUS_GITHUB_TOKEN с тем же токеном, что
+используется в скрипте на ПК (с правом "gist") — тогда лимит вырастет
+до 5000 запросов в час, и можно смело опрашивать каждые 10-15 секунд.
 """
 
 import os
@@ -22,6 +26,11 @@ from discord.ext import commands, tasks
 
 GIST_ID = os.getenv("SPT_STATUS_GIST_ID", "")
 GIST_FILENAME = os.getenv("SPT_STATUS_GIST_FILENAME", "status.txt")
+GITHUB_TOKEN = os.getenv("SPT_STATUS_GITHUB_TOKEN", "")  # опционально, для более частых проверок
+
+# Без токена безопасный минимум — 60 секунд (лимит 60 запросов/час).
+# С токеном лимит 5000/час, можно смело уменьшать это число.
+CHECK_INTERVAL_SECONDS = 5 if GITHUB_TOKEN else 60
 
 
 class SPTStatus(commands.Cog):
@@ -33,16 +42,17 @@ class SPTStatus(commands.Cog):
     def cog_unload(self):
         self.check_spt_status.cancel()
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def check_spt_status(self):
         if not GIST_ID:
             print("[spt_status] SPT_STATUS_GIST_ID не задан, пропускаю проверку")
             return
 
         url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status != 200:
                         print(f"[spt_status] GitHub API ответил {resp.status}")
                         return
@@ -64,12 +74,12 @@ class SPTStatus(commands.Cog):
         if text == "online":
             await self.bot.change_presence(
                 status=discord.Status.online,
-                activity=discord.Game(name="🟢 SPT Server ONLINE"),
+                activity=discord.Game(name="SPT сервер: 🟢 Онлайн"),
             )
         else:
             await self.bot.change_presence(
                 status=discord.Status.idle,
-                activity=discord.Game(name="🔴 SPT Server OFFLINE"),
+                activity=discord.Game(name="SPT сервер: 🔴 Выключен"),
             )
         print(f"[spt_status] Статус сервера обновлён: {text}")
 
