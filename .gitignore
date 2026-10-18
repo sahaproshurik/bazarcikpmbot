@@ -10,6 +10,10 @@ __pycache__/
 *.corrupt-*
 *.stackdump
 greeting.mp3
+# Модель детектора «Базарчик» — скачивается сама при первом !listen
+vosk-wake-ru/
+vosk-wake-ru.tmp/
+vosk-wake-ru.zip.part
 
 # Рабочие данные бота — создаются на хостинге, в git им не место
 player_loans.json

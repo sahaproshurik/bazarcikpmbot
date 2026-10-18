@@ -2,7 +2,8 @@
 voice_listen.py — бот слушает войс и отвечает голосом, когда к нему обращаются «Базарчик, …».
 
 !listen — зайти в твой войс и слушать, !stoplisten — перестать.
-Каждый участник записывается отдельно; когда человек замолчал, фраза уходит в Whisper (Groq).
+Каждый участник записывается отдельно. Когда человек замолчал, начало фразы слушает локальный детектор
+«Базарчик» (wake_word.py, Vosk на сервере бота), и только фразы с обращением уходят в Whisper (Groq).
 Если фраза начинается с «Базарчик» — ИИ отвечает голосом и дублирует ответ в чат.
 Звук живёт только в памяти до распознавания и сразу удаляется; фразы без обращения никуда не пишутся.
 
@@ -24,6 +25,7 @@ from discord.ext import commands
 from discord.opus import Decoder as OpusDecoder
 from discord.sinks import Sink
 import ai
+import wake_word
 from cogs.voice_ai import say, answer_embed
 
 try:
@@ -274,6 +276,7 @@ class ListenSession:
             warnings.simplefilter("ignore", RuntimeWarning)
             self.vc.start_recording(self.sink, self._on_reader_stop)
         self.loop_task = asyncio.create_task(self._watch())
+        wake_word.detector.acquire()      # модель «Базарчик» грузится в фоне, пока она не готова — всё решает Whisper
 
     def _on_reader_stop(self, error):     # колбэк py-cord из его потока
         if error is not None and not self.stopping:
@@ -314,7 +317,7 @@ class ListenSession:
                     return await self.stop("полчаса никто не обращался")
                 if now - self.reported_at >= 60:      # статистика приёма в логи — для диагностики
                     self.reported_at = now
-                    print(f"[listen] {self.vc.channel}: {self.sink.report()}")
+                    print(f"[listen] {self.vc.channel}: {self.sink.report()}{wake_word.detector.report()}")
                 if not self.warned_quiet and humans and self.sink.frames == 0 and now - self.started > QUIET_HINT_SEC:
                     self.warned_quiet = True
                     packets = self.sink.stats["packets"]
@@ -343,6 +346,9 @@ class ListenSession:
         return True
 
     async def handle(self, user, pcm: bytes):
+        waiting = time.monotonic() <= self.followup.get(user.id, 0)
+        if not waiting and not await wake_word.detector.heard(pcm):
+            return                        # «Базарчик» не прозвучал — фраза не уходит даже в Whisper
         if not self._stt_allowed():
             if not self.warned_limit:
                 self.warned_limit = True
@@ -352,7 +358,6 @@ class ListenSession:
         audio = to_wav(pcm)
         del pcm
         try:
-            waiting = time.monotonic() <= self.followup.get(user.id, 0)
             question = await recognize(audio, "speech.wav", waiting, self._stt_allowed)
         except ai.AIError as e:
             print(f"[listen] Распознавание не удалось: {e}")
@@ -377,6 +382,7 @@ class ListenSession:
             return
         self.stopping = True
         self.cog.sessions.pop(self.guild.id, None)
+        wake_word.detector.release()
         try:
             if self.vc.is_recording():
                 with warnings.catch_warnings():
@@ -443,7 +449,8 @@ class VoiceListenCog(commands.Cog):
         name="listen", aliases=["слушай"], brief="Бот слушает войс и отвечает на «Базарчик, …»",
         help="`!listen` — бот заходит в твой войс и слушает. Начни фразу с «Базарчик» — он ответит голосом "
              "и продублирует ответ в чат. Можно сказать просто «Базарчик?» и задать вопрос следом.\n"
-             "Звук хранится только в памяти до распознавания, фразы без обращения не сохраняются.\n"
+             "Звук хранится только в памяти до распознавания, фразы без обращения не сохраняются. "
+             "Обращение сначала слышит детектор прямо на сервере бота — в Groq уходят только фразы с «Базарчик».\n"
              "Выключается командой `!stoplisten`, а сам — когда все ушли или полчаса никто не обращался.\n"
              "Если войс не слышно — отправь в чат голосовое сообщение «Базарчик, …».")
     @commands.guild_only()
@@ -478,7 +485,9 @@ class VoiceListenCog(commands.Cog):
             f"Канал: {voice.channel.mention}\n"
             "Обращайся: **«Базарчик, …»** — отвечу голосом и продублирую в чат.\n\n"
             "🔒 Звук хранится только в памяти до распознавания (Groq Whisper) и сразу удаляется, "
-            "фразы без обращения никуда не записываются.\n"
+            "фразы без обращения никуда не записываются."
+            + (" «Базарчик» сначала слышит детектор прямо на сервере бота — в Groq уходят только фразы "
+               "с обращением.\n" if wake_word.ENABLED else "\n") +
             "Выключить: `!stoplisten`. Сам выключусь, если все уйдут или полчаса никто не обратится."))
         await ctx.send(embed=e)
 

@@ -4,3 +4,4 @@ pytz
 gtts
 edge-tts
 groq>=1.0
+vosk>=0.3.45
