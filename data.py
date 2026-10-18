@@ -21,6 +21,7 @@ WARNS_FILE      = "player_warns.json"
 MCD_FILE        = "mcd_data.json"
 GUILD_CFG_FILE  = "guild_config.json"
 MOD_FILE        = "mod_data.json"
+CASINO_FILE     = "casino_stats.json"
 
 
 # ── JSON helpers ──────────────────────────────────────────────
@@ -62,6 +63,7 @@ player_warns      = load_json(WARNS_FILE)
 USER_ORDERS_COMPLETED = load_json(ORDERS_FILE)
 mcd_data          = load_json(MCD_FILE)
 guild_config      = load_json(GUILD_CFG_FILE)          # {guild_id: {log_channel, automod, autorole, ...}}
+casino_stats      = load_json(CASINO_FILE)             # {uid: {games, wins, wagered, net, biggest}}
 mod_data          = load_json(MOD_FILE)                # кейсы, временные баны, локдауны
 for _key, _default in (("cases", []), ("tempbans", []), ("lockdown", {})):
     mod_data.setdefault(_key, _default)
@@ -81,6 +83,7 @@ def save_warns():       save_json(WARNS_FILE,       player_warns)
 def save_mcd():         save_json(MCD_FILE,         mcd_data)
 def save_guild_cfg():   save_json(GUILD_CFG_FILE,   guild_config)
 def save_mod():         save_json(MOD_FILE,         mod_data)
+def save_casino():      save_json(CASINO_FILE,      casino_stats)
 
 
 # ── Mafia state ───────────────────────────────────────────────
@@ -104,8 +107,7 @@ XP_CD:    dict = {}
 LOTTO_POOL:    dict = {}
 LOTTO_RUNNING: dict = {}
 
-ORDERS:         dict = {}
-ORDER_MESSAGES: dict = {}
+ORDERS:         dict = {}   # uid → активная смена на складе GymBeam
 order_history:  dict = {}
 
 # ── Economy constants ─────────────────────────────────────────

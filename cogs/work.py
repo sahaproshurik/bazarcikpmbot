@@ -1,260 +1,419 @@
-import random
+"""
+work.py — смена на складе GymBeam: пикинг по маршруту и упаковка (balenie).
+
+• Пикинг: сканер ведёт по уличкам склада — сканируй правильную уличку, собери заказ и отправь его.
+  Оплата зависит от Приемера (!priemer), который растёт от собранных позиций.
+• Упаковка: подбери коробку под заказ и упакуй в правильном порядке.
+Точность важна: без ошибок +10%, каждая ошибка −5% (не больше −30%).
+"""
 import asyncio
+import random
+import time
+from collections import Counter
 import discord
 from discord.ext import commands, tasks
-from discord.ui import View, Button
 from discord import Interaction
 from data import (
     player_funds, player_inventory, priemer_data,
-    SPORT_ITEMS_WITH_BRANDS, ORDERS, ORDER_MESSAGES, order_history,
+    SPORT_ITEMS_WITH_BRANDS, ORDERS, order_history,
     save_funds, save_priemer,
 )
 from cogs.economy import init_player, work_tax
+from views import OwnedView, progress_bar, GREY, GREEN, BLUE, RED
+
+GB_ORANGE = discord.Color.from_rgb(255, 102, 0)
+ZONES     = "BC"
+SHELVES   = "ABCDEFGHJ"
+BOXES     = {"A": range(1, 7), "B": range(7, 13), "C": range(13, 19), "D": range(19, 25), "E": range(25, 31)}
+PACK_STEPS = {"fill": ("Výplň", "📄"), "tape": ("Zalepiť", "🧻"), "label": ("Štítok", "🏷")}
+PACK_ORDER = list(PACK_STEPS)
+JOB_ALIASES = {
+    "pick": "pick", "picking": "pick", "пикинг": "pick", "pikovanie": "pick",
+    "pack": "pack", "packing": "pack", "balenie": "pack", "баление": "pack", "упаковка": "pack",
+}
+# (приемер меньше чем, оплата от, оплата до) — вилка оплаты за собранный заказ
+PRIEMER_TIERS = [(60, 50, 10_000), (80, 10_000, 20_000), (120, 20_000, 50_000), (None, 50_000, 100_000)]
+SCANNER_ERROR_CHANCE = 0.03
 
 
-def generate_order():
-    n = random.randint(1, 30)
-    positions = []
-    for _ in range(n):
-        brand    = random.choice(list(SPORT_ITEMS_WITH_BRANDS.keys()))
-        item     = random.choice(SPORT_ITEMS_WITH_BRANDS[brand])
-        location = f"3{random.choice('BC')}{random.randint(1,56)}{random.choice('ABCDEFGHJ')}{random.randint(1,4)}"
-        positions.append({"location": location, "item": f"{brand} - {item}", "status": "не выполнено"})
-    return positions
+def pick_pay_range(pm: int):
+    for limit, lo, hi in PRIEMER_TIERS:
+        if limit is None or pm < limit:
+            return lo, hi
 
 
-# ── PickingView ───────────────────────────────────────────────
-class PickingView(View):
-    def __init__(self, user_id: str):
-        super().__init__(timeout=None)
-        self.user_id  = str(user_id)
-        self._picking = False
+def priemer_level(pm: int) -> str:
+    return "🔴 Низкий" if pm < 60 else "🟡 Средний" if pm < 80 else "🟢 Высокий" if pm < 120 else "💎 Максимум"
 
-        self.pick_btn = Button(label="Skenovat' produkt", style=discord.ButtonStyle.green)
-        self.pick_btn.callback = self._pick
 
-        self.exit_btn = Button(label="Выйти с работы", style=discord.ButtonStyle.red, disabled=True)
-        self.exit_btn.callback = self._exit
+def accuracy(mistakes: int) -> float:
+    return 1.1 if mistakes == 0 else max(0.7, 1 - 0.05 * mistakes)
 
-        self.add_item(self.pick_btn)
-        self.add_item(self.exit_btn)
 
-    async def _pick(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        uid = self.user_id
-        if uid not in ORDERS:
-            await interaction.response.send_message("Нет активного заказа!", ephemeral=True); return
-        if self._picking:
-            await interaction.response.send_message("Подождите!", ephemeral=True); return
+def fmt_time(secs: float) -> str:
+    m, s = divmod(int(secs), 60)
+    return f"{m:02d}:{s:02d}"
 
-        await interaction.response.defer()
-        self._picking = True
 
-        positions = [p for p in ORDERS[uid] if p["status"] == "не выполнено"]
-        if not positions:
-            self._picking = False
-            await self._switch_to_finish(interaction); return
+def random_item() -> str:
+    brand = random.choice(list(SPORT_ITEMS_WITH_BRANDS))
+    return f"{brand} — {random.choice(SPORT_ITEMS_WITH_BRANDS[brand])}"
 
-        if random.random() < 0.03:
-            self.pick_btn.disabled = True
-            wait = random.randint(30, 180)
-            for r in range(wait, 0, -15):
-                try:
-                    await interaction.message.edit(
-                        content=f"{interaction.user.mention}, ошибка телефона — ждём сапорта. Ожидание: {r}с.", view=self)
-                except Exception: pass
-                await asyncio.sleep(15)
-            self.pick_btn.disabled = False
-            self._picking = False
-            await interaction.message.edit(content=f"{interaction.user.mention}, продолжай пикинг.", view=self)
-            return
 
-        num = random.randint(1, 5)
-        picked = 0
-        for p in ORDERS[uid]:
-            if p["status"] == "не выполнено" and picked < num:
-                p["status"] = "выполнено"; picked += 1
+def aisle_code(aisle) -> str:
+    zone, num = aisle
+    return f"3{zone}-{num:02d}"
 
-        done = [f"✅ ~~{i+1}. {p['location']} ({p['item']})~~"
-                for i, p in enumerate(ORDERS[uid]) if p["status"] == "выполнено"]
-        todo = [f"{i+1}. {p['location']} ({p['item']})"
-                for i, p in enumerate(ORDERS[uid]) if p["status"] == "не выполнено"]
 
-        content = f"{interaction.user.mention}\n" + "\n".join(done[-10:]) + "\n\n" + "\n".join(todo[:20])
-        if len(content) > 1950: content = content[:1950] + "..."
+def generate_route(size: int) -> list:
+    """Позиции заказа, сгруппированные по уличкам (1–5 на уличку) в порядке обхода склада."""
+    stops, used, left = [], set(), size
+    while left > 0:
+        k = min(left, random.randint(1, 5))
+        aisle = (random.choice(ZONES), random.randint(1, 56))
+        if aisle in used:
+            continue
+        used.add(aisle)
+        items = [{"shelf": f"{random.choice(SHELVES)}{random.randint(1, 4)}", "item": random_item()}
+                 for _ in range(k)]
+        stops.append({"aisle": aisle, "items": items})
+        left -= k
+    stops.sort(key=lambda s: s["aisle"])
+    return stops
 
-        remaining = [p for p in ORDERS[uid] if p["status"] == "не выполнено"]
-        if not remaining:
-            self._picking = False
-            await self._switch_to_finish(interaction)
+
+def decoys(aisle) -> list:
+    """Две похожие, но неправильные улички: соседний номер или та же уличка в другой зоне."""
+    zone, num = aisle
+    out = set()
+    while len(out) < 2:
+        if random.random() < 0.5:
+            cand = (zone, min(56, max(1, num + random.choice((-3, -2, -1, 1, 2, 3)))))
         else:
-            delay = random.randint(1, 4)
-            self.pick_btn.disabled = True
-            try: await interaction.message.edit(content=content, view=self)
-            except Exception: pass
-            await asyncio.sleep(delay)
-            self.pick_btn.disabled = False
-            self._picking = False
-            try: await interaction.message.edit(view=self)
-            except Exception: pass
+            cand = ("C" if zone == "B" else "B", num)
+        if cand != aisle:
+            out.add(cand)
+    return list(out)
 
-    async def _switch_to_finish(self, interaction: Interaction):
+
+# ── Базовая смена на складе ───────────────────────────────────
+class WarehouseView(OwnedView):
+    TITLE = "📦 GymBeam"
+    deny_text = "Это не твоя смена на складе!"
+
+    def __init__(self, user):
+        super().__init__(user, timeout=300)
+        self.orders_done  = 0
+        self.shift_earned = 0
+        self.done         = False
+        self.new_order()
+
+    # ── реализуют пикинг и упаковка ──
+    def build_order(self): ...
+    def render_order(self) -> discord.Embed: ...
+    def summary_extra(self, e: discord.Embed): ...
+
+    def new_order(self):
+        self.no       = f"GB-{random.randint(100000, 999999)}"
+        self.size     = random.randint(1, 30)
+        self.mistakes = 0
+        self.t0       = time.monotonic()
+        self.note     = ""
+        self.summary  = None
+
+    def note_line(self) -> str:
+        note, self.note = self.note, ""
+        return f"{note}\n\n" if note else ""
+
+    def mistake(self, note: str):
+        self.mistakes += 1
+        self.note = note
+
+    def status_line(self) -> str:
+        return f"⏱ {fmt_time(time.monotonic() - self.t0)} • ❌ chyby: {self.mistakes}"
+
+    def embed(self, desc: str, color=GB_ORANGE) -> discord.Embed:
+        e = discord.Embed(title=self.TITLE, description=desc, color=color)
+        e.set_footer(text=f"{self.user.display_name} • objednávok za smenu: {self.orders_done} • "
+                          f"zarobené: {self.shift_earned:,} 💰")
+        return e
+
+    def render(self) -> discord.Embed:
+        return self.render_summary() if self.summary else self.render_order()
+
+    def prepare(self):
         self.clear_items()
-        fb = Button(label="Odoslat' objednavku", style=discord.ButtonStyle.blurple)
-        fb.callback = self._finish
-        self.exit_btn.disabled = False
-        self.add_item(fb); self.add_item(self.exit_btn)
-        try: await interaction.message.edit(content=f"{interaction.user.mention}, все позиции собраны! Отправь заказ.", view=self)
-        except Exception: pass
+        if self.summary:
+            self.btn("Nová objednávka", self._next, GREEN, emoji="📦")
+            self.btn("Koniec smeny", self._quit, RED, emoji="🚪")
+        else:
+            self.build_order()
+            self.btn("Koniec smeny", self._quit, RED, emoji="🚪", row=4)
 
-    async def _finish(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        await interaction.response.defer()
-        uid = self.user_id
-        num = len(ORDERS.get(uid, []))
-        if uid not in order_history: order_history[uid] = []
-        order_history[uid].append(num)
+    async def show(self, interaction=None):
+        self.prepare()
+        await self.push(interaction, content=None, embed=self.render(), view=self)
 
-        pm = priemer_data.get(uid, 0)
-        if   pm < 60:  earnings = random.randint(50,    10_000)
-        elif pm < 80:  earnings = random.randint(10_000, 20_000)
-        elif pm < 120: earnings = random.randint(20_000, 50_000)
-        else:          earnings = random.randint(50_000, 100_000)
-
-        if player_inventory.get(uid, {}).get("pickaxe", 0) > 0:
-            earnings = int(earnings * 1.2)
-
-        tax_amount = work_tax(earnings)
-        net        = earnings - tax_amount
-
-        player_funds[uid] = player_funds.get(uid, 0) + net
+    def pay(self, base: int, label: str):
+        """Оплата заказа: точность, кирка (+20%) и налог на зарплату."""
+        acc     = accuracy(self.mistakes)
+        gross   = int(base * acc)
+        pickaxe = player_inventory.get(self.uid, {}).get("pickaxe", 0) > 0
+        if pickaxe:
+            gross = int(gross * 1.2)
+        tax = work_tax(gross)
+        net = gross - tax
+        player_funds[self.uid] = player_funds.get(self.uid, 0) + net
         save_funds()
-        if uid in ORDERS:        del ORDERS[uid]
-        if uid in ORDER_MESSAGES: del ORDER_MESSAGES[uid]
+        self.orders_done  += 1
+        self.shift_earned += net
+        self.summary = {"label": label, "acc": acc, "pickaxe": pickaxe, "gross": gross, "tax": tax,
+                        "net": net, "time": time.monotonic() - self.t0}
 
-        self.clear_items()
-        nb = Button(label="Новый заказ", style=discord.ButtonStyle.green)
-        nb.callback = self._new_order
-        self.exit_btn.disabled = False
-        self.add_item(nb); self.add_item(self.exit_btn)
-        try:
-            await interaction.message.edit(
-                content=(f"{interaction.user.mention}, заказ завершён!\n"
-                         f"Начислено: **{earnings:,}** | Налог: **{tax_amount:,}** | Итого: **{net:,}** 💰\n"
-                         f"Приемер: **{pm}**"),
-                view=self)
-        except Exception: pass
+    def render_summary(self) -> discord.Embed:
+        s = self.summary
+        acc = "🎯 без ошибок: +10%" if self.mistakes == 0 else f"❌ {self.mistakes} → ×{s['acc']:.2f}"
+        e = self.embed(f"{self.note_line()}🚚 **Objednávka #{self.no} odoslaná!**\n{s['label']}",
+                       color=discord.Color.green())
+        e.add_field(name="Kusov", value=str(self.size))
+        e.add_field(name="Čas", value=fmt_time(s["time"]))
+        e.add_field(name="Presnosť", value=acc)
+        e.add_field(name="Výplata", inline=False,
+                    value=f"Начислено: **{s['gross']:,}** | Налог: **{s['tax']:,}** | На руки: **{s['net']:,}** 💰")
+        if s["pickaxe"]:
+            e.add_field(name="Bonus", value="⛏ Кирка: +20%", inline=False)
+        self.summary_extra(e)
+        return e
 
-    async def _new_order(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
+    async def _next(self, interaction: Interaction):
+        self.new_order()
+        await self.show(interaction)
+
+    def release(self):
+        if ORDERS.get(self.uid) is self:
+            del ORDERS[self.uid]
+
+    def shift_report(self) -> str:
+        text = f"Objednávok: **{self.orders_done}**, zarobené: **{self.shift_earned:,}** 💰."
+        if self.summary is None:
+            text += " Nedokončená objednávka sa neplatí."
+        return text
+
+    async def _quit(self, interaction: Interaction):
+        self.done = True
+        self.release()
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"🚪 {self.user.mention}, smena skončila. {self.shift_report()}", embed=None, view=None)
+
+    async def on_timeout(self):
+        if self.done:
+            return
+        self.done = True
+        self.release()
+        if self.message is not None:
+            try:
+                await self.message.edit(content=f"⌛ {self.user.mention}, smena ukončená pre nečinnosť. "
+                                                f"{self.shift_report()}", embed=None, view=None)
+            except discord.HTTPException:
+                pass
+
+
+# ── 📟 Пикинг ─────────────────────────────────────────────────
+class PickingView(WarehouseView):
+    TITLE = "📦 GymBeam • Pikovanie"
+
+    def new_order(self):
+        super().new_order()
+        self.stops   = generate_route(self.size)
+        self.stop_i  = 0
+        self.picked  = 0
+        self.phase   = "pick"         # pick → (error) → ready
+        self.token   = None
+        self.task    = None
+        self.options = self._options()
+        if self.uid not in priemer_data:
+            priemer_data[self.uid] = 0
+            save_priemer()
+
+    def _options(self) -> list:
+        aisle = self.stops[self.stop_i]["aisle"]
+        opts = [aisle] + decoys(aisle)
+        random.shuffle(opts)
+        return opts
+
+    def build_order(self):
+        if self.phase == "pick":
+            for a in self.options:
+                self.btn(f"Skenovať {aisle_code(a)}", self._scan(a), BLUE, emoji="📟")
+        elif self.phase == "error":
+            self.btn("Čakáme na support…", self._wait, GREY, emoji="📵", disabled=True)
+        else:
+            self.btn("Odoslať objednávku", self._send, GREEN, emoji="🚚")
+
+    def render_order(self) -> discord.Embed:
+        pm = priemer_data.get(self.uid, 0)
+        head = (f"📟 **Skener** • objednávka **#{self.no}** • {self.size} ks\n"
+                f"{progress_bar(self.picked, self.size)} **{self.picked}/{self.size}**\n"
+                f"{self.status_line()} • 📈 Priemer: {pm}\n\n")
+        if self.phase == "ready":
+            body = "✅ **Všetko vychystané!** Вези тележку на упаковку и отправляй заказ."
+        else:
+            stop  = self.stops[self.stop_i]
+            items = "\n".join(f"• `{it['shelf']}` — {it['item']}" for it in stop["items"])
+            ahead = [aisle_code(s["aisle"]) for s in self.stops[self.stop_i + 1:self.stop_i + 4]]
+            route = ("🗺 Ďalej: " + " → ".join(ahead) + (" → …" if len(self.stops) > self.stop_i + 4 else "")
+                     if ahead else "🏁 Posledná ulička!")
+            hint  = ("📵 Skener zamrzol — čakáme na support." if self.phase == "error"
+                     else "Отсканируй штрихкод нужной улички.")
+            body  = (f"📍 **Choď do uličky {aisle_code(stop['aisle'])}** "
+                     f"({self.stop_i + 1}/{len(self.stops)})\n{items}\n\n{route}\n{hint}")
+        return self.embed(self.note_line() + head + body)
+
+    async def _wait(self, interaction: Interaction):
         await interaction.response.defer()
-        uid = self.user_id
-        ORDERS[uid] = generate_order()
-        priemer_data[uid] = priemer_data.get(uid, 0)
-        save_priemer()
 
-        pickup = "\n".join(f"{i+1}. {o['location']} ({o['item']})" for i,o in enumerate(ORDERS[uid]))
-        if len(pickup) > 1800: pickup = pickup[:1800] + "..."
-        nv  = PickingView(uid)
-        msg = await interaction.channel.send(
-            f"{interaction.user.mention}, новый заказ **{len(ORDERS[uid])}** позиций. Приемер: **{priemer_data[uid]}**\n\n**Пикап лист:**\n{pickup}",
-            view=nv)
-        ORDER_MESSAGES[uid] = msg.id
-        try: await interaction.message.delete()
-        except Exception: pass
-
-    async def _exit(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        uid = self.user_id
-        ORDERS.pop(uid, None); ORDER_MESSAGES.pop(uid, None)
-        await interaction.message.edit(content=f"{interaction.user.mention}, вы вышли с работы.", view=None)
-
-
-# ── PackingView ───────────────────────────────────────────────
-class PackingView(View):
-    def __init__(self, user_id: str, order_size: int):
-        super().__init__(timeout=None)
-        self.user_id      = str(user_id)
-        self.order_size   = order_size
-        self.remaining    = order_size
-        self.selected_box = None
-
-        box_map = {"A":range(1,7),"B":range(7,13),"C":range(13,19),"D":range(19,25),"E":range(25,31)}
-        for box in box_map:
-            btn = Button(label=f"Коробка {box}", style=discord.ButtonStyle.blurple)
-            btn.callback = self._make_cb(box)
-            self.add_item(btn)
-
-        self.collect_btn = Button(label="Собрать товар", style=discord.ButtonStyle.green, disabled=True)
-        self.collect_btn.callback = self._collect
-
-        self.exit_btn = Button(label="Выйти с работы", style=discord.ButtonStyle.red, disabled=True)
-        self.exit_btn.callback = self._exit
-
-        self.add_item(self.collect_btn)
-        self.add_item(self.exit_btn)
-
-    def _make_cb(self, box):
+    def _scan(self, aisle):
         async def cb(interaction: Interaction):
-            await self._select_box(interaction, box)
+            if self.phase != "pick":
+                await interaction.response.defer()
+                return
+            stop = self.stops[self.stop_i]
+            if aisle != stop["aisle"]:
+                self.mistake(f"❌ **Nesprávna lokácia!** Это {aisle_code(aisle)}, а товар лежит "
+                             f"в {aisle_code(stop['aisle'])}.")
+                self.options = self._options()
+            elif random.random() < SCANNER_ERROR_CHANCE:
+                self.phase = "error"
+                self.token = token = object()
+                self.note  = "📵 **Chyba skenera!** Skener zamrzol, čakáme na support…"
+                self.task  = asyncio.create_task(self._scanner_error(token))
+            else:
+                self.picked += len(stop["items"])
+                self.stop_i += 1
+                self.note = f"✅ Naskenované: {len(stop['items'])} ks z {aisle_code(stop['aisle'])}"
+                if self.stop_i >= len(self.stops):
+                    self.phase = "ready"
+                else:
+                    self.options = self._options()
+            await self.show(interaction)
         return cb
 
-    async def _select_box(self, interaction: Interaction, box: str):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        box_map = {"A":range(1,7),"B":range(7,13),"C":range(13,19),"D":range(19,25),"E":range(25,31)}
-        if self.order_size not in box_map[box]:
-            await interaction.response.send_message(
-                f"Коробка **{box}** не подходит для {self.order_size} товаров!", ephemeral=True); return
-        self.selected_box         = box
-        self.collect_btn.disabled = False
-        await interaction.message.edit(
-            content=f"{interaction.user.mention}, коробка **{box}** выбрана. Осталось: **{self.remaining}** товаров.", view=self)
+    async def _scanner_error(self, token):
+        """Как в жизни: сканер зависает, и приходится ждать support (20–60 секунд)."""
+        left = random.randint(20, 60)
+        while left > 0:
+            await asyncio.sleep(min(10, left))
+            left -= 10
+            if self.done or self.token is not token:
+                return
+            self.note = (f"📵 **Chyba skenera** — čakáme na support, ešte ~{left} s." if left > 0
+                         else "🛠 Support pomohol, skener funguje. Pokračuj!")
+            if left <= 0:
+                self.phase = "pick"
+                self.options = self._options()
+            try:
+                await self.show()
+            except discord.HTTPException:
+                pass
 
-    async def _collect(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        if self.remaining > 0:
-            self.remaining -= random.randint(1, min(5, self.remaining))
-            if self.remaining > 0:
-                await interaction.message.edit(
-                    content=f"{interaction.user.mention}, осталось: **{self.remaining}** товаров.", view=self)
+    async def _send(self, interaction: Interaction):
+        if self.phase != "ready":
+            await interaction.response.defer()
+            return
+        pm = priemer_data.get(self.uid, 0)
+        lo, hi = pick_pay_range(pm)
+        self.pay(random.randint(lo, hi), f"Priemer **{pm}** → вилка оплаты {lo:,}–{hi:,} 💰")
+        order_history.setdefault(self.uid, []).append(self.size)
+        await self.show(interaction)
+
+    def summary_extra(self, e: discord.Embed):
+        pm = priemer_data.get(self.uid, 0)
+        e.add_field(name="📈 Priemer", inline=False,
+                    value=f"{pm}/150 {progress_bar(pm, 150)} {priemer_level(pm)}\n"
+                          f"Растёт от собранных позиций — обновляется раз в минуту.")
+
+
+# ── 📦 Упаковка ───────────────────────────────────────────────
+class PackingView(WarehouseView):
+    TITLE = "📦 GymBeam • Balenie"
+
+    def new_order(self):
+        super().new_order()
+        self.items  = Counter(random_item() for _ in range(self.size))
+        self.box    = None
+        self.packed = 0
+        self.steps  = []
+        self.phase  = "box"           # box → pack
+
+    def build_order(self):
+        if self.phase == "box":
+            for letter in BOXES:
+                self.btn(f"Krabica {letter}", self._box(letter), BLUE, emoji="📦")
+            return
+        self.btn("Vložiť produkty", self._insert, BLUE, emoji="📥", disabled=self.packed >= self.size)
+        for key, (name, emoji) in PACK_STEPS.items():
+            done = key in self.steps
+            self.btn(name, self._step(key), GREEN if done else GREY, emoji=emoji, disabled=done)
+        self.btn("Odoslať", self._send, GREEN, emoji="✅", row=1)
+
+    def render_order(self) -> discord.Embed:
+        lines = [f"• {item}" + (f" ×{n}" if n > 1 else "") for item, n in self.items.most_common()]
+        if len(lines) > 10:
+            lines = lines[:10] + [f"…a ďalšie {len(lines) - 10} druhy"]
+        head = (f"🧾 **Objednávka #{self.no}** • **{self.size} ks**\n" + "\n".join(lines) +
+                f"\n\n{self.status_line()}\n")
+        if self.phase == "box":
+            legend = " · ".join(f"**{k}** {r.start}–{r.stop - 1}" for k, r in BOXES.items())
+            body = f"📐 Krabice: {legend}\nВыбери коробку под количество товара."
+        else:
+            mark = lambda ok: "✅" if ok else "⬜"
+            steps = " · ".join(f"{mark(k in self.steps)} {name}" for k, (name, _) in PACK_STEPS.items())
+            body = (f"📦 Krabica **{self.box}** • {progress_bar(self.packed, self.size)} "
+                    f"**{self.packed}/{self.size}**\n"
+                    f"{mark(self.packed >= self.size)} Produkty · {steps}\n\n"
+                    f"Порядок: produkty → výplň → zalepiť → štítok → odoslať.")
+        return self.embed(self.note_line() + head + body)
+
+    def _box(self, letter: str):
+        async def cb(interaction: Interaction):
+            fits = BOXES[letter]
+            if self.size in fits:
+                self.box, self.phase = letter, "pack"
+                self.note = f"✅ Krabica **{letter}** sedí na {self.size} ks."
             else:
-                await self._complete(interaction)
+                size = "malá" if self.size >= fits.stop else "veľká"
+                self.mistake(f"❌ Krabica **{letter}** je príliš {size} na {self.size} ks.")
+            await self.show(interaction)
+        return cb
 
-    async def _complete(self, interaction: Interaction):
-        uid      = self.user_id
-        earnings = random.randint(50, 10_000)
-        player_funds[uid] = player_funds.get(uid, 0) + earnings
-        save_funds()
-        if uid in ORDERS: del ORDERS[uid]
+    async def _insert(self, interaction: Interaction):
+        k = random.randint(1, min(5, self.size - self.packed))
+        self.packed += k
+        self.note = f"📥 Vložené +{k} ks." + (" Všetko v krabici!" if self.packed >= self.size else "")
+        await self.show(interaction)
 
-        self.clear_items()
-        self.exit_btn.disabled = False
-        nb = Button(label="Новый заказ", style=discord.ButtonStyle.green)
-        nb.callback = self._new_order
-        self.add_item(nb); self.add_item(self.exit_btn)
-        await interaction.message.edit(
-            content=f"{interaction.user.mention}, баление завершено! Заработано: **{earnings:,}** 💰", view=self)
+    def _step(self, key: str):
+        async def cb(interaction: Interaction):
+            name = PACK_STEPS[key][0]
+            if self.packed < self.size:
+                self.mistake(f"❌ Najprv vlož všetky produkty — {name} až potom!")
+            else:
+                expected = PACK_ORDER[len(self.steps)]
+                if key != expected:
+                    self.mistake(f"❌ Teraz ide **{PACK_STEPS[expected][0]}**, nie {name}.")
+                else:
+                    self.steps.append(key)
+                    self.note = f"{PACK_STEPS[key][1]} {name} — hotovo."
+            await self.show(interaction)
+        return cb
 
-    async def _new_order(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        ns  = random.randint(1, 30)
-        nv  = PackingView(self.user_id, ns)
-        await interaction.message.edit(
-            content=f"{interaction.user.mention}, новый заказ: **{ns}** товаров. Выберите коробку.", view=nv)
-
-    async def _exit(self, interaction: Interaction):
-        if str(interaction.user.id) != self.user_id:
-            await interaction.response.send_message("Это не ваш заказ!", ephemeral=True); return
-        uid = self.user_id
-        ORDERS.pop(uid, None); ORDER_MESSAGES.pop(uid, None)
-        await interaction.message.edit(content=f"{interaction.user.mention}, вы вышли с работы.", view=None)
+    async def _send(self, interaction: Interaction):
+        if self.packed < self.size or len(self.steps) < len(PACK_ORDER):
+            self.mistake("❌ Balík ešte nie je hotový — kuriér ho nezoberie!")
+        else:
+            self.pay(random.randint(50, 10_000), f"📦 Krabica **{self.box}** zabalená a odovzdaná kuriérovi.")
+        await self.show(interaction)
 
 
 # ── Cog ───────────────────────────────────────────────────────
@@ -267,44 +426,45 @@ class WorkCog(commands.Cog):
     def cog_unload(self):
         self.update_priemer.cancel()
 
-    @commands.command(name="gb", brief="Пойти работать на склад")
-    async def start_job(self, ctx):
+    @commands.command(
+        name="gb", brief="Смена на складе GymBeam",
+        help="`!gb` — смена на складе GymBeam (работа выбирается случайно), `!gb pick` — пикинг, "
+             "`!gb pack` — упаковка.\n\n"
+             "📟 **Пикинг:** сканер ведёт по уличкам — жми кнопку с правильной уличкой, собери все позиции "
+             "и отправь заказ. Оплата зависит от Приемера (`!priemer`): <60 — 50–10 000, <80 — 10–20 тыс., "
+             "<120 — 20–50 тыс., выше — 50–100 тыс. Иногда сканер зависает — подожди support.\n"
+             "📦 **Упаковка:** выбери коробку (A 1–6, B 7–12, C 13–18, D 19–24, E 25–30), вложи товар, "
+             "затем výplň → zalepiť → štítok → odoslať.\n\n"
+             "Без ошибок +10%, каждая ошибка −5%. ⛏ Кирка +20%. Налог 7% (до 47 000) или 19%.")
+    async def start_job(self, ctx, job: str = None):
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
-        job = random.choice(["пикинг", "баление"])
+        if uid in ORDERS:
+            await ctx.send(f"{ctx.author.mention}, у тебя уже идёт смена на складе — "
+                           f"закончи её кнопкой «Koniec smeny».", delete_after=8)
+            return
+        key = JOB_ALIASES.get(job.lower().strip()) if job else random.choice(["pick", "pack"])
+        if key is None:
+            await ctx.send("❌ Работа: `!gb pick` (пикинг) или `!gb pack` (упаковка).", delete_after=8)
+            return
+        view = (PickingView if key == "pick" else PackingView)(ctx.author)
+        ORDERS[uid] = view
+        view.prepare()
+        view.message = await ctx.send(embed=view.render(), view=view)
 
-        if job == "пикинг":
-            ORDERS[uid]       = generate_order()
-            priemer_data[uid] = priemer_data.get(uid, 0)
-            save_priemer()
-            pickup = "\n".join(f"{i+1}. {o['location']} ({o['item']})" for i,o in enumerate(ORDERS[uid]))
-            if len(pickup) > 1800: pickup = pickup[:1800] + "..."
-            view = PickingView(uid)
-            msg  = await ctx.send(
-                f"{ctx.author.mention} 📦 Работа: **пикинг** | Заказ: **{len(ORDERS[uid])}** позиций | Приемер: **{priemer_data[uid]}**\n\n**Пикап лист:**\n{pickup}",
-                view=view)
-            ORDER_MESSAGES[uid] = msg.id
-        else:
-            order_size = random.randint(1, 30)
-            ORDERS[uid] = [{"item": random.choice(random.choice(list(SPORT_ITEMS_WITH_BRANDS.values())))} for _ in range(order_size)]
-            view = PackingView(uid, order_size)
-            msg  = await ctx.send(
-                f"{ctx.author.mention} 📦 Работа: **баление** | Заказ: **{order_size}** товаров. Выберите коробку.",
-                view=view)
-            ORDER_MESSAGES[uid] = msg.id
-
-    @commands.command(name="priemer", brief="Посмотреть показатель эффективности работы")
-    async def priemer_cmd(self, ctx):
-        uid = str(ctx.author.id)
-        pm  = priemer_data.get(uid, 0)
-        embed = discord.Embed(title=f"📦 Приемер {ctx.author.display_name}", color=discord.Color.orange())
-        bar_fill = int((pm / 150) * 20)
-        bar = "█" * bar_fill + "░" * (20 - bar_fill)
-        embed.add_field(name="Приемер",  value=f"{pm}/150")
-        embed.add_field(name="Прогресс", value=f"`[{bar}]`")
-        lv = "🔴 Низкий" if pm < 60 else ("🟡 Средний" if pm < 80 else ("🟢 Высокий" if pm < 120 else "💎 Максимум"))
-        embed.add_field(name="Статус", value=lv)
-        await ctx.send(embed=embed)
+    @commands.command(name="priemer", brief="Показатель эффективности на складе")
+    async def priemer_cmd(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        pm = priemer_data.get(str(member.id), 0)
+        lo, hi = pick_pay_range(pm)
+        e = discord.Embed(title=f"📈 Priemer — {member.display_name}", color=GB_ORANGE,
+                          description=f"## {pm}/150\n{progress_bar(pm, 150, 20)}")
+        e.add_field(name="Úroveň", value=priemer_level(pm))
+        e.add_field(name="Výplata za pikovanie", value=f"{lo:,}–{hi:,} 💰")
+        nxt = next((limit for limit, _, _ in PRIEMER_TIERS if limit is not None and pm < limit), None)
+        e.add_field(name="Ďalšia úroveň", value=f"ещё {nxt - pm}" if nxt else "максимум 💎")
+        e.set_footer(text="Растёт от собранных позиций пикинга, без работы медленно падает.")
+        await ctx.send(embed=e)
 
     @tasks.loop(minutes=1)
     async def update_priemer(self):

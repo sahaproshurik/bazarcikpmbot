@@ -12,15 +12,10 @@ import random
 import time
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
 from discord import Interaction
 from data import player_funds, player_inventory, mcd_data, save_funds, save_mcd
 from cogs.economy import init_player, work_tax
-
-GREY  = discord.ButtonStyle.secondary
-GREEN = discord.ButtonStyle.success
-BLUE  = discord.ButtonStyle.primary
-RED   = discord.ButtonStyle.danger
+from views import OwnedView, GREY, GREEN, BLUE, RED
 
 MCD_RED  = discord.Color.from_rgb(218, 41, 28)
 MCD_GOLD = discord.Color.from_rgb(255, 199, 44)
@@ -192,13 +187,14 @@ def order_total(order: dict) -> int:
 
 
 # ── Базовая смена ─────────────────────────────────────────────
-class ShiftView(View):
+class ShiftView(OwnedView):
     ROUNDS = 5
     BRIEF  = ""
+    deny_text = "Это не твоя смена!"
 
     def __init__(self, user, station: str):
-        super().__init__(timeout=180)
-        self.user, self.uid, self.station = user, str(user.id), station
+        super().__init__(user, timeout=180)
+        self.station = station
         self.manager = random.choice(MANAGERS)
         self.round   = 0
         self.scores: list = []
@@ -221,19 +217,6 @@ class ShiftView(View):
     def render(self) -> discord.Embed: ...
 
     # ── Общая механика ──
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message("Это не твоя смена!", ephemeral=True)
-            return False
-        self.message = interaction.message
-        return True
-
-    def btn(self, label, cb, style=GREY, row=None, emoji=None, disabled=False):
-        b = Button(label=label, style=style, row=row, emoji=emoji, disabled=disabled)
-        b.callback = cb
-        self.add_item(b)
-        return b
-
     def exit_button(self, row: int):
         self.btn("Уйти", self._quit, RED, emoji="🚪", row=row)
 
@@ -263,12 +246,6 @@ class ShiftView(View):
         )
         e.set_footer(text=f"{RANKS[st['rank']][0]} • смена №{st['shifts'] + 1} • заданий: {self.ROUNDS}")
         return e
-
-    async def push(self, interaction, **kw):
-        if interaction is not None and not interaction.response.is_done():
-            await interaction.response.edit_message(**kw)
-        elif self.message is not None:
-            await self.message.edit(**kw)
 
     async def show(self, interaction=None):
         self.clear_items()

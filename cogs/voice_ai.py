@@ -26,6 +26,27 @@ def generate_greeting():
             print(f"[AUDIO] Ошибка создания файла: {e}")
 
 
+def answer_embed(user, question: str, reply: str) -> discord.Embed:
+    embed = discord.Embed(description=reply[:4000], color=discord.Color.teal())
+    embed.set_author(name=f"{user.display_name}: {question}"[:256], icon_url=user.display_avatar.url)
+    embed.set_footer(text="🤖 ИИ • !aiclear — очистить память")
+    return embed
+
+
+async def say(vc: discord.VoiceClient, text: str):
+    """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза."""
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        tts_path = f.name
+    await edge_tts.Communicate(text[:1500], TTS_SETTINGS["voice"]).save(tts_path)
+    while vc.is_playing():
+        await asyncio.sleep(0.3)
+
+    def after_play(_):
+        try: os.unlink(tts_path)
+        except OSError: pass
+    vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
+
+
 class VoiceAICog(commands.Cog):
     def __init__(self, bot):
         self.bot              = bot
@@ -38,24 +59,23 @@ class VoiceAICog(commands.Cog):
              "ИИ помнит последние реплики всех участников сервера. Очистить память: `!aiclear`.")
     async def ask_ai(self, ctx, *, question: str):
         status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *Думаю…*")
-        history = self._shared_histories[ctx.guild.id if ctx.guild else ctx.author.id]
-        user_message = {"role": "user", "content": f"[{ctx.author.display_name}]: {question}"}
-
         try:
-            reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
+            reply = await self.answer(ctx.guild.id if ctx.guild else ctx.author.id, ctx.author.display_name, question)
         except ai.AIError as e:
             await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n❌ {e}")
             return
-
-        history.extend([user_message, {"role": "assistant", "content": reply}])
-        embed = discord.Embed(description=reply[:4000], color=discord.Color.teal())
-        embed.set_author(name=f"{ctx.author.display_name}: {question}"[:256],
-                         icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(text="🤖 ИИ • !aiclear — очистить память")
-        await status_msg.edit(content=None, embed=embed)
+        await status_msg.edit(content=None, embed=answer_embed(ctx.author, question, reply))
 
         if ctx.guild and ctx.author.voice:
             await self._speak(ctx, reply)
+
+    async def answer(self, memory_key: int, name: str, question: str) -> str:
+        """Ответ ИИ с общей памятью сервера — для !ask, голосовых сообщений и прослушивания войса."""
+        history = self._shared_histories[memory_key]
+        user_message = {"role": "user", "content": f"[{name}]: {question}"}
+        reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
+        history.extend([user_message, {"role": "assistant", "content": reply}])
+        return reply
 
     async def _speak(self, ctx, text: str):
         """Озвучка ответа в войсе — бонус: если голос недоступен, ответ уже есть в чате."""
@@ -63,16 +83,7 @@ class VoiceAICog(commands.Cog):
         try:
             if not vc or not vc.is_connected():
                 vc = await asyncio.wait_for(ctx.author.voice.channel.connect(), timeout=15)
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                tts_path = f.name
-            await edge_tts.Communicate(text[:1500], TTS_SETTINGS["voice"]).save(tts_path)
-            while vc.is_playing():
-                await asyncio.sleep(0.5)
-
-            def after_play(_):
-                try: os.unlink(tts_path)
-                except OSError: pass
-            vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
+            await say(vc, text)
         except Exception as e:
             print(f"[voice_ai] Озвучка не удалась: {e!r}")
             await ctx.send("🔇 Не получилось озвучить ответ в войсе — он есть в чате.", delete_after=8)
@@ -150,6 +161,9 @@ class VoiceAICog(commands.Cog):
 
             if _greeting_lock.locked():
                 return
+            listen = self.bot.get_cog("VoiceListenCog")
+            if listen is not None and listen.is_listening(member.guild.id):
+                return                         # бот сейчас слушает войс — не переподключаемся ради приветствия
 
             async with _greeting_lock:
                 await asyncio.sleep(1)

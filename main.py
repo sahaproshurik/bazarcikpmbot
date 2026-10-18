@@ -34,6 +34,7 @@ COGS = [
     "cogs.fun",
     "cogs.petitions",
     "cogs.voice_ai",
+    "cogs.voice_listen",
     "cogs.mafia",
     "cogs.spt_status",
 ]
