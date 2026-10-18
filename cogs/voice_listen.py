@@ -25,6 +25,7 @@ from discord.ext import commands
 from discord.opus import Decoder as OpusDecoder
 from discord.sinks import Sink
 import ai
+import diag
 import wake_word
 from cogs.voice_ai import say, answer_embed
 
@@ -128,20 +129,37 @@ async def recheck_language(audio: bytes, filename: str, heard: ai.Transcript, al
     return best
 
 
-async def recognize(audio: bytes, filename: str, waiting: bool = False, allowed=lambda: True):
+async def recognize(audio: bytes, filename: str, waiting: bool = False, allowed=lambda: True, info: dict = None):
     """Распознаёт фразу и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
-    waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения."""
+    waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения.
+    info — сюда для логов кладутся язык, уверенность Whisper и число запросов (без текста фразы)."""
+    info = {} if info is None else info
+    info["requests"] = 1
     heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, detailed=True)
+    info.update(lang=heard.lang, score=heard.score)
     question = split_wake(heard.text)
     called = question is not None
     if not called and waiting and heard.text:
         question = heard.text
     if not question:
         return question
-    better = await recheck_language(audio, filename, heard, allowed)
+
+    def counted():
+        ok = allowed()
+        info["requests"] += ok
+        return ok
+    better = await recheck_language(audio, filename, heard, counted)
     if better is not heard:
+        info.update(lang=better.lang, score=better.score)
         question = (split_wake(better.text) if called else better.text) or question
     return question
+
+
+def whisper_note(info: dict, seconds: float) -> str:
+    """«Whisper uk (-0.33), 2 запроса, 0.9 с» — для логов."""
+    score = info.get("score")
+    lang = f"{info.get('lang')} ({score:.2f})" if score is not None else str(info.get("lang"))
+    return f"Whisper {lang}, запросов {info.get('requests', 0)}, {seconds:.1f} с"
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -269,6 +287,20 @@ class ListenSession:
         self.loop_task = None
         self.restarts = 0
         self.reported_at = self.started
+        self.phrase_no = 0                # номер фразы в логах: по нему видно всю её дорогу
+        self.minute, self.total = {}, {}  # счётчики для логов: за последнюю минуту и за всю сессию
+        self.cpu = diag.CpuMeter()
+
+    def count(self, key: str, n: int = 1):
+        for counter in (self.minute, self.total):
+            counter[key] = counter.get(key, 0) + n
+
+    @staticmethod
+    def counts_note(c: dict) -> str:
+        return (f"фраз {c.get('phrases', 0)}, детектор пропустил {c.get('to_bot', 0)}, "
+                f"без «Базарчик» (ждали ответ) {c.get('bypass', 0)}, запросов в Whisper {c.get('whisper', 0)}, "
+                f"вопросов боту {c.get('questions', 0)}, отсеял Whisper {c.get('dropped', 0)}, "
+                f"мимо лимита {c.get('limit', 0)}")
 
     def start(self):
         self.sink.init(self.vc)
@@ -277,6 +309,10 @@ class ListenSession:
             self.vc.start_recording(self.sink, self._on_reader_stop)
         self.loop_task = asyncio.create_task(self._watch())
         wake_word.detector.acquire()      # модель «Базарчик» грузится в фоне, пока она не готова — всё решает Whisper
+        humans = sum(not m.bot for m in getattr(self.vc.channel, "members", []))
+        print(f"[listen] Старт: {getattr(self.guild, 'name', self.guild.id)} / "
+              f"{getattr(self.vc.channel, 'name', self.vc.channel)}, людей {humans}; "
+              f"детектор {wake_word.detector.state}; {diag.report()}")
 
     def _on_reader_stop(self, error):     # колбэк py-cord из его потока
         if error is not None and not self.stopping:
@@ -318,6 +354,8 @@ class ListenSession:
                 if now - self.reported_at >= 60:      # статистика приёма в логи — для диагностики
                     self.reported_at = now
                     print(f"[listen] {self.vc.channel}: {self.sink.report()}{wake_word.detector.report()}")
+                    print(f"[listen] За минуту: {self.counts_note(self.minute)}; {diag.report(self.cpu)}")
+                    self.minute = {}
                 if not self.warned_quiet and humans and self.sink.frames == 0 and now - self.started > QUIET_HINT_SEC:
                     self.warned_quiet = True
                     packets = self.sink.stats["packets"]
@@ -346,10 +384,23 @@ class ListenSession:
         return True
 
     async def handle(self, user, pcm: bytes):
-        waiting = time.monotonic() <= self.followup.get(user.id, 0)
-        if not waiting and not await wake_word.detector.heard(pcm):
+        """Одна фраза: детектор → лимит → Whisper → ответ. В логах — путь фразы под номером, без её текста."""
+        self.phrase_no += 1
+        tag = f"#{self.phrase_no} {user.display_name}"
+        started = time.monotonic()
+        self.count("phrases")
+        waiting = started <= self.followup.get(user.id, 0)
+        if waiting:
+            self.count("bypass")
+            print(f"[listen] {tag}: фраза {len(pcm) / BYTES_PER_SEC:.1f} с — бот ждёт ответ, идёт без детектора "
+                  f"(окно ещё {self.followup[user.id] - started:.0f} с)")
+        elif not await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с)"):
             return                        # «Базарчик» не прозвучал — фраза не уходит даже в Whisper
+        else:
+            self.count("to_bot")
         if not self._stt_allowed():
+            self.count("limit")
+            print(f"[listen] {tag}: пропущена — лимит {STT_LIMIT[0]} распознаваний за {STT_LIMIT[1] // 60} мин")
             if not self.warned_limit:
                 self.warned_limit = True
                 await self.channel.send("⏳ Слишком много разговоров — часть фраз пропускаю, чтобы не упереться "
@@ -357,31 +408,42 @@ class ListenSession:
             return
         audio = to_wav(pcm)
         del pcm
+        info = {}
         try:
-            question = await recognize(audio, "speech.wav", waiting, self._stt_allowed)
+            question = await recognize(audio, "speech.wav", waiting, self._stt_allowed, info)
         except ai.AIError as e:
-            print(f"[listen] Распознавание не удалось: {e}")
+            print(f"[listen] {tag}: распознавание не удалось: {e}")
             return
         finally:
             del audio                     # звук больше нигде не хранится
+            self.count("whisper", info.get("requests", 0))
+        note = whisper_note(info, time.monotonic() - started)
         if question is None:
+            self.count("dropped")
+            print(f"[listen] {tag}: {note} — обращения нет, фраза выброшена")
             return                        # обычный разговор — не к боту, расшифровку выбрасываем
         if not question:
+            print(f"[listen] {tag}: {note} — позвали без вопроса, жду вопрос {FOLLOWUP_SEC} с")
             self.followup[user.id] = time.monotonic() + FOLLOWUP_SEC
             try:
                 await say(self.vc, "Да? Слушаю.")
             except Exception as e:
                 print(f"[listen] Не удалось ответить голосом: {e!r}")
             return
+        self.count("questions")
+        print(f"[listen] {tag}: {note} — вопрос боту (слов: {len(question.split())})")
         self.followup.pop(user.id, None)
         self.last_wake = time.monotonic()
         await self.cog.reply(self.channel, user, question, self.vc, "🎙️ из войса")
+        print(f"[listen] {tag}: обработана за {time.monotonic() - started + SILENCE_SEC:.1f} с от конца фразы")
 
     async def stop(self, reason: str = None, disconnect: bool = True):
         if self.stopping:
             return
         self.stopping = True
         self.cog.sessions.pop(self.guild.id, None)
+        print(f"[listen] Стоп ({reason or 'без причины'}): {(time.monotonic() - self.started) / 60:.1f} мин, "
+              f"{self.counts_note(self.total)}; {self.sink.report()}")
         wake_word.detector.release()
         try:
             if self.vc.is_recording():
@@ -431,11 +493,14 @@ class VoiceListenCog(commands.Cog):
             jarvis = self.bot.get_cog("JarvisCog")     # просьба что-то сделать — выполняет Джарвис (cogs/jarvis.py)
             if jarvis is not None and await jarvis.handle(channel, user, question, vc, source):
                 return
+            started = time.monotonic()
             try:
                 reply = await voice_cog.answer(channel.guild.id, user.display_name, question)
             except ai.AIError as e:
+                print(f"[listen] {user.display_name}: ответ ИИ не получен: {e}")
                 await channel.send(f"❌ {e}", delete_after=15)
                 return
+            print(f"[listen] {user.display_name}: ответ ИИ за {time.monotonic() - started:.1f} с, {len(reply)} символов")
             embed = answer_embed(user, question, reply)
             embed.set_footer(text=f"{source} • «Базарчик, …» — чтобы спросить")
             await channel.send(embed=embed)
@@ -508,13 +573,18 @@ class VoiceListenCog(commands.Cog):
         attachment = message.attachments[0]
         if attachment.size > 20 * 1024 * 1024:
             return
+        started, info = time.monotonic(), {}
         try:
             audio = await attachment.read()
-            question = await recognize(audio, attachment.filename or "voice.ogg")
+            question = await recognize(audio, attachment.filename or "voice.ogg", info=info)
         except (discord.HTTPException, ai.AIError) as e:
-            print(f"[listen] Голосовое сообщение не распознано: {e}")
+            print(f"[listen] Голосовое сообщение от {message.author.display_name} не распознано: {e}")
             return
         del audio
+        result = ("обращения нет, выброшено" if question is None else "только «Базарчик», без вопроса"
+                  if not question else f"вопрос боту (слов: {len(question.split())})")
+        print(f"[listen] Голосовое от {message.author.display_name} ({attachment.size / 1024:.0f} КБ): "
+              f"{whisper_note(info, time.monotonic() - started)} — {result}")
         if not question:
             return                        # голосовое не боту — расшифровку не храним
         vc = message.guild.voice_client

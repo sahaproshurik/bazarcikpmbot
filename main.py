@@ -7,6 +7,7 @@ main.py — точка входа бота BAZARCIK_PM.
 import asyncio
 import logging
 import os
+import sys
 import time
 import traceback
 import discord
@@ -127,6 +128,26 @@ class BazarcikBot(commands.Bot):
             pass
 
 
+class StampedOutput:
+    """Время в начале каждой строки print() — так логи бота ([listen], [wake], [jarvis]…) легко
+    сопоставлять со строками py-cord, у которых время уже есть."""
+
+    def __init__(self, stream):
+        self.stream, self.fresh = stream, True
+
+    def write(self, text: str):
+        out = []
+        for part in text.splitlines(keepends=True):
+            if self.fresh:
+                out.append(time.strftime("%Y-%m-%d %H:%M:%S "))
+            out.append(part)
+            self.fresh = part.endswith("\n")
+        return self.stream.write("".join(out))
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 # ── Entry point ──────────────────────────────────────────────
 async def main():
     token = os.getenv("DISCORD_BOT_TOKEN")
@@ -140,6 +161,11 @@ async def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # py-cord раз в секунду пишет INFO о служебных RTCP-пакетах голоса — за этим шумом не видно логов бота
+    logging.getLogger("discord.voice.receive.reader").setLevel(logging.WARNING)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)   # строки бота сразу видны и не отстают от логов py-cord
+    sys.stdout = StampedOutput(sys.stdout)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

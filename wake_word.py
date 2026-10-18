@@ -23,9 +23,11 @@ import os
 import shutil
 import struct
 import threading
+import time
 import urllib.request
 import zipfile
 from array import array
+import diag
 
 ENABLED      = os.getenv("LOCAL_WAKE", "1").strip().lower() not in ("0", "off", "false", "no")
 MODEL_URL    = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
@@ -168,7 +170,17 @@ class WakeWord:
     def _open():
         import vosk
         vosk.SetLogLevel(-1)
-        return vosk, vosk.Model(prepare_model())
+        started = time.monotonic()
+        fresh = not os.path.exists(os.path.join(MODEL_DIR, "graph", "words.txt"))
+        path = prepare_model()
+        if fresh:
+            print(f"[wake] Модель скачана и подготовлена за {time.monotonic() - started:.1f} с → {path}")
+        print("[wake] Загружаю модель. Строка Vosk «Fst::Read: Can't open file …/Gr.fst» — норма: "
+              "этот файл удалён специально, чтобы модель занимала меньше памяти")
+        started = time.monotonic()
+        model = vosk.Model(path)
+        print(f"[wake] Модель загружена за {time.monotonic() - started:.1f} с; {diag.report()}")
+        return vosk, model
 
     def _spot(self, model, audio: bytes) -> list:
         with self._lock:
@@ -178,20 +190,29 @@ class WakeWord:
             result = json.loads(rec.FinalResult())
         return [(w["word"], w["start"]) for w in result.get("result", [])]
 
-    async def heard(self, pcm: bytes) -> bool:
-        """Есть ли в начале фразы «Базарчик». Детектор не готов — True: пусть решает Whisper, как раньше."""
+    async def heard(self, pcm: bytes, label: str = "") -> bool:
+        """Есть ли в начале фразы «Базарчик». Детектор не готов — True: пусть решает Whisper, как раньше.
+        label («#12 Nikita (2.4 с)») — для строки в логе. В лог попадает только то, что услышал детектор:
+        его словарь — «базар», «чик» и [unk] (всё остальное), так что содержание фразы туда не утекает."""
         model = self.model
         if model is None:
+            if label:
+                print(f"[wake] {label}: детектор {self.state} → фраза идёт в Whisper")
             return True
         audio = to_16k_mono(pcm[: int(WINDOW_SEC * 48000) * 4])
+        started = time.monotonic()
         try:
             words = await asyncio.to_thread(self._spot, model, audio)
         except Exception as e:
-            print(f"[wake] Ошибка детектора, фраза уходит в Whisper: {e!r}")
+            print(f"[wake] {label}: ошибка детектора, фраза уходит в Whisper: {e!r}")
             return True
         hit = called(words)
         self.stats["checked"] += 1
         self.stats["heard"] += hit
+        if label:
+            got = ", ".join(f"{w} {s:.1f}с" for w, s in words) or "тишина"
+            print(f"[wake] {label}: {got} → {'к боту' if hit else 'не к боту'} "
+                  f"({(time.monotonic() - started) * 1000:.0f} мс)")
         return hit
 
     def report(self) -> str:

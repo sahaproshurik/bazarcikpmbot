@@ -316,6 +316,11 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
+def args_note(args: dict) -> str:
+    """Параметры разбора для логов: member=Petya, duration=10m; причина — свободный текст — только длиной."""
+    return ", ".join(f"{k}=…{len(str(v))} симв." if k == "reason" else f"{k}={v}" for k, v in args.items()) or "—"
+
+
 def to_intent(raw: str, question: str) -> Intent:
     obj = extract_json(raw) or {}
     action = str(obj.get("action") or "chat").strip().lower()
@@ -551,6 +556,13 @@ class Pending:
     message: object = None
     view: object = None
     done: bool = False
+    trace: str = ""                     # та же команда для логов — свободный текст только длиной
+    created: float = field(default_factory=time.monotonic)
+    answers: int = 0                    # сколько непонятных ответов было, пока ждали «да»
+
+    @property
+    def age(self) -> float:
+        return time.monotonic() - self.created
 
     @property
     def what(self) -> str:
@@ -602,19 +614,26 @@ class JarvisCog(commands.Cog):
         if pending is not None and not pending.done:
             answer = yes_no(question)
             if answer is None:
+                pending.answers += 1
+                print(f"[jarvis] {user.display_name}: ответ на подтверждение непонятен (слов: {len(question.split())}, "
+                      f"{pending.answers}-й, прошло {pending.age:.0f} из {CONFIRM_SEC} с) — переспрашиваю")
                 await self.tell(channel, user, question, vc, source, tr("yes_no", pending.lang), remember=False)
                 self.await_answer(channel.guild, user)
             else:
                 await self.resolve(pending, answer)
             return True
+        started = time.monotonic()
         try:
             intent = await self.parse(channel.guild, user, question, vc)
         except ai.AIError as e:
-            print(f"[jarvis] Разбор фразы не удался: {e}")
+            print(f"[jarvis] {user.display_name}: разбор фразы не удался ({e}) — отвечает обычный ИИ")
             return False
+        took = time.monotonic() - started
         if intent.action == "chat":
+            print(f"[jarvis] {user.display_name} → обычный вопрос [{intent.lang}], разбор {took:.1f} с")
             return False
-        print(f"[jarvis] {user.display_name} → {intent.action}")
+        print(f"[jarvis] {user.display_name} → {intent.action} ({args_note(intent.args)}) [{intent.lang}], "
+              f"разбор {took:.1f} с")
         try:
             await self.execute(channel, user, question, vc, source, intent)
         except Exception as e:
@@ -635,6 +654,8 @@ class JarvisCog(commands.Cog):
                   f"Участники в войсе: {', '.join(voice_names) or '—'}\n"
                   f"Фраза: {question}")
         raw = await ai.ask(PARSE_PROMPT, prompt, max_tokens=400, temperature=0)
+        if extract_json(raw) is None:
+            print(f"[jarvis] {user.display_name}: разбор вернул не JSON ({len(raw)} симв.) — считаю обычным вопросом")
         return to_intent(raw, question)
 
     @staticmethod
@@ -645,28 +666,31 @@ class JarvisCog(commands.Cog):
     # ── Выполнение ────────────────────────────────────────────
     async def execute(self, channel, user, question, vc, source, intent: Intent):
         lang = intent.lang
-        reply = lambda text: self.tell(channel, user, question, vc, source, text)  # noqa: E731
+
+        async def refuse(why: str, text: str):
+            print(f"[jarvis] {user.display_name}: {intent.action} не выполнено — {why}")
+            await self.tell(channel, user, question, vc, source, text)
         if intent.action == "forbidden" or intent.action in VOICE_FORBIDDEN:
-            return await reply(tr("forbidden", lang))
+            return await refuse("голосом запрещено", tr("forbidden", lang))
         action = ACTIONS_BY_KEY.get(intent.action)
         command = self.command_for(action, channel.guild)
         if command is None:
-            return await reply(tr("unsupported", lang))
+            return await refuse("нет в белом списке или модуль не загружен", tr("unsupported", lang))
         if owner_only(command):
-            return await reply(tr("forbidden", lang))
+            return await refuse(f"!{command.name} — owner-команда", tr("forbidden", lang))
         ctx = make_context(self.bot, user, channel, command)
         if (denied := await self.check_rights(ctx, command, lang)) is not None:
-            return await reply(denied)
+            return await refuse(f"проверка прав !{command.name} не пройдена", denied)
         try:
             values = await self.convert(ctx, action, intent.args, lang, vc)
         except NotUnderstood as e:
-            return await reply(str(e))
+            return await refuse(f"не разобраны параметры ({args_note(intent.args)})", str(e))
         if action.hierarchy:
             from cogs.moderation import hierarchy_error
             if err := hierarchy_error(ctx, values["member"]):
-                return await reply(err)
+                return await refuse(f"иерархия ролей: {err}", err)
         pending = Pending(user, channel, vc, action, values, self.shown(command, action, values),
-                          question, source, lang)
+                          question, source, lang, trace=self.shown(command, action, values, redact=True))
         needs = action.confirm(ctx, values) if callable(action.confirm) else action.confirm
         if needs:
             return await self.ask_confirm(pending)
@@ -687,12 +711,15 @@ class JarvisCog(commands.Cog):
         try:
             if await command.can_run(ctx):
                 return None
+            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — проверка вернула «нельзя»")
         except commands.NotOwner:
+            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — только для владельца бота")
             return tr("forbidden", lang)
-        except (commands.BotMissingPermissions, commands.BotMissingRole):
+        except (commands.BotMissingPermissions, commands.BotMissingRole) as e:
+            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — у бота не хватает прав: {e}")
             return tr("bot_rights", lang)
-        except commands.CommandError:
-            pass
+        except commands.CommandError as e:
+            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — {type(e).__name__}: {e}")
         return tr("no_rights", lang)
 
     async def convert(self, ctx, action: Action, args: dict, lang: str, vc) -> dict:
@@ -787,7 +814,8 @@ class JarvisCog(commands.Cog):
         return args, kwargs
 
     @staticmethod
-    def shown(command, action: Action, values: dict) -> str:
+    def shown(command, action: Action, values: dict, redact: bool = False) -> str:
+        """Команда как в чате: !mute @Petya 10м «за спам». redact — для логов: свободный текст только длиной."""
         parts = [f"!{command.name}"]
         for p in action.params:
             v = values.get(p.name)
@@ -797,8 +825,10 @@ class JarvisCog(commands.Cog):
                 parts.append(fmt_duration(v) if v else "off")
             elif hasattr(v, "display_name"):
                 parts.append(f"@{v.display_name}")
+            elif p.kind == "text":
+                parts.append(f"«…{len(v)} симв.»" if redact else f"«{v}»")
             else:
-                parts.append(f"«{v}»" if p.kind == "text" else str(v))
+                parts.append(str(v))
         return " ".join(parts)
 
     async def run(self, p: Pending):
@@ -806,23 +836,28 @@ class JarvisCog(commands.Cog):
         reply = lambda text, **kw: self.tell(p.channel, p.user, p.question, p.vc, p.source, text, **kw)  # noqa: E731
         command = self.command_for(p.action, p.channel.guild)
         if command is None or owner_only(command):
+            print(f"[jarvis] {p.user.display_name}: {p.trace} не выполнено — команды нет или она owner-only")
             return await reply(tr("unsupported", p.lang))
         ctx = make_context(self.bot, p.user, p.channel, command)
         if (denied := await self.check_rights(ctx, command, p.lang)) is not None:
+            print(f"[jarvis] {p.user.display_name}: {p.trace} не выполнено — права пропали перед выполнением")
             return await reply(denied)
         args, kwargs = self.call_args(p.action, p.values)
         bye = p.action.key == "stop_listening" and self.speaking(p.vc)
         if bye:                                    # прощаемся до выхода: после него голоса уже не будет
             await self.speak(p.vc, tr("bye", p.lang))
             await self.wait_playback(p.vc)
-        failure = None
+        failure, started = None, time.monotonic()
         try:
             await ctx.invoke(command, *args, **kwargs)
-        except discord.Forbidden:
+        except discord.Forbidden as e:
+            print(f"[jarvis] {p.user.display_name}: {p.trace} — Discord не дал прав боту: {e}")
             failure = tr("bot_rights", p.lang)
         except Exception as e:
-            print(f"[jarvis] Команда !{command.name} упала: {e!r}")
+            print(f"[jarvis] {p.user.display_name}: {p.trace} — команда упала: {e!r}")
             failure = tr("failed", p.lang)
+        print(f"[jarvis] {p.user.display_name}: {p.trace} — {'ошибка' if failure else 'выполнено'} за "
+              f"{time.monotonic() - started:.1f} с, сообщений в чат {len(ctx.channel.sent)}")
         footer = f"!{command.name}"
         if failure:
             return await reply(failure, footer=footer)
@@ -837,22 +872,31 @@ class JarvisCog(commands.Cog):
             return tr("done", p.lang)
         prompt = (f"Просьба [{p.user.display_name}]: {p.question}\nКоманда: {p.shown}\n"
                   f"Результат в чате:\n{result[:1500]}")
+        started = time.monotonic()
         try:
-            return await ai.ask(SUMMARY_PROMPT.format(lang=p.lang), prompt, max_tokens=300, temperature=0.4)
+            text = await ai.ask(SUMMARY_PROMPT.format(lang=p.lang), prompt, max_tokens=300, temperature=0.4)
         except ai.AIError as e:
-            print(f"[jarvis] Пересказ итога не удался: {e}")
+            print(f"[jarvis] {p.user.display_name}: пересказ итога не удался ({e}) — озвучиваю результат как есть")
             return result[:300]
+        print(f"[jarvis] {p.user.display_name}: пересказ итога за {time.monotonic() - started:.1f} с, "
+              f"{len(text)} символов")
+        return text
 
     # ── Подтверждение ─────────────────────────────────────────
     async def ask_confirm(self, p: Pending):
         old = self.pending.get((p.channel.guild.id, p.user.id))
         if old is not None and self.take(old):
+            print(f"[jarvis] {old.user.display_name}: {old.trace} — заменено новой командой через {old.age:.0f} с")
             await self.close_confirm(old, "✖️ Заменено новой командой")
         p.view = ConfirmView(self, p)
         self.pending[(p.channel.guild.id, p.user.id)] = p
         p.message = await p.channel.send(embed=confirm_embed(p), view=p.view)
         self.await_answer(p.channel.guild, p.user)
+        print(f"[jarvis] {p.user.display_name}: жду подтверждения {p.trace} ({CONFIRM_SEC} с)")
         await self.speak(p.vc, tr("confirm", p.lang, what=p.what))
+        if self.speaking(p.vc):
+            print(f"[jarvis] {p.user.display_name}: вопрос о подтверждении начал звучать через {p.age:.1f} с "
+                  f"после начала окна")
 
     def await_answer(self, guild, user):
         """Следующая фраза этого человека в войсе дойдёт до бота даже без «Базарчик» — это ответ «да/нет»."""
@@ -880,6 +924,8 @@ class JarvisCog(commands.Cog):
             return
         how = "кнопкой" if interaction is not None else "голосом"
         status = f"✅ Подтверждено {how}" if yes else f"✖️ Отменено {how}"
+        print(f"[jarvis] {p.user.display_name}: {p.trace} — {'подтверждено' if yes else 'отменено'} {how} "
+              f"через {p.age:.1f} с, непонятных ответов {p.answers}")
         if interaction is None:                    # голос: мы уже внутри очереди ответов войса
             await self.close_confirm(p, status)
             return await self.finish(p, yes)
@@ -895,6 +941,8 @@ class JarvisCog(commands.Cog):
 
     async def expire(self, p: Pending):
         if self.take(p):
+            print(f"[jarvis] {p.user.display_name}: {p.trace} — подтверждение истекло через {p.age:.0f} с, "
+                  f"непонятных ответов {p.answers}")
             await self.close_confirm(p, f"⌛ Не подтвердили за {CONFIRM_SEC} сек — отменено")
 
     @staticmethod

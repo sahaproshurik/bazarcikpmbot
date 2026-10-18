@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import tempfile
+import time
 from collections import defaultdict, deque
 import discord
 from discord.ext import commands
@@ -69,14 +70,30 @@ def voice_for(text: str) -> str:
 
 
 async def say(vc: discord.VoiceClient, text: str):
-    """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза."""
+    """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза.
+    В логах — голос, длина, время синтеза, ожидание очереди и сколько фраза звучала."""
+    voice = voice_for(text)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tts_path = f.name
-    await edge_tts.Communicate(text[:1500], voice_for(text)).save(tts_path)
+    started = time.monotonic()
+    try:
+        await edge_tts.Communicate(text[:1500], voice).save(tts_path)
+    except Exception as e:
+        print(f"[tts] {voice}: синтез не удался за {time.monotonic() - started:.1f} с: {e!r}")
+        try: os.unlink(tts_path)
+        except OSError: pass
+        raise
+    synth = time.monotonic() - started
     while vc.is_playing():
         await asyncio.sleep(0.3)
+    queued = time.monotonic() - started - synth
+    print(f"[tts] {voice}: {len(text)} символов, синтез {synth:.1f} с"
+          + (f", ждал очередь {queued:.1f} с" if queued >= 0.3 else ""))
+    playing = time.monotonic()
 
-    def after_play(_):
+    def after_play(error):
+        print(f"[tts] {voice}: прозвучало за {time.monotonic() - playing:.1f} с"
+              + (f", ошибка: {error!r}" if error else ""))
         try: os.unlink(tts_path)
         except OSError: pass
     vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)

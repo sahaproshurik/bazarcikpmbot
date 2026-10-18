@@ -72,6 +72,11 @@ def _friendly(e) -> str:
     return f"Ошибка ИИ: {str(e)[:200]}"
 
 
+def _key_no(key: str) -> str:
+    """«ключ #2 из 3» — для логов; сам ключ в логи не попадает."""
+    return f"ключ #{API_KEYS.index(key) + 1} из {len(API_KEYS)}" if key in API_KEYS else "ключ ?"
+
+
 async def _run(models: list, call, dead: set):
     """Перебирает модели и ключи: лимит/плохой ключ — следующий ключ, снятая модель — следующая модель.
     call(client, model) возвращает результат; None означает «пустой ответ, попробуй другой ключ»."""
@@ -85,8 +90,12 @@ async def _run(models: list, call, dead: set):
                 if result is not None:
                     return model, result
                 last = AIError("ИИ вернул пустой ответ.")
+                print(f"[ai] {model}: {_key_no(key)} — пустой ответ, пробую следующий")
             except (RateLimitError, AuthenticationError, PermissionDeniedError, APIConnectionError) as e:
                 last = e                       # этот ключ не сработал — пробуем следующий
+                retry = getattr(getattr(e, "response", None), "headers", {}).get("retry-after")
+                print(f"[ai] {model}: {_key_no(key)} — {type(e).__name__}"
+                      + (f" (Groq просит подождать {retry} с)" if retry else "") + ", пробую следующий")
             except (NotFoundError, BadRequestError) as e:
                 last = e
                 if _is_model_gone(e):
@@ -96,6 +105,7 @@ async def _run(models: list, call, dead: set):
                 raise AIError(_friendly(e)) from e
             except APIStatusError as e:
                 last = e
+                print(f"[ai] {model}: {_key_no(key)} — ошибка сервера {getattr(e, 'status_code', '?')}, пробую следующий")
     print(f"[ai] Запрос не удался: {last!r}")
     raise AIError(_friendly(last))
 
