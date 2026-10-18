@@ -109,8 +109,16 @@ class VoiceAICog(commands.Cog):
         history = self._shared_histories[memory_key]
         user_message = {"role": "user", "content": f"[{name}]: {question}"}
         reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
-        history.extend([user_message, {"role": "assistant", "content": reply}])
+        self.remember(memory_key, name, question, reply)
         return reply
+
+    def remember(self, memory_key: int, name: str, question: str, reply: str):
+        """Добавляет реплику в общую память — так ИИ помнит и то, что бот сделал по голосовой команде."""
+        self._shared_histories[memory_key].extend([{"role": "user", "content": f"[{name}]: {question}"},
+                                                   {"role": "assistant", "content": reply}])
+
+    def recent(self, memory_key: int, count: int) -> list:
+        return list(self._shared_histories[memory_key])[-count:]
 
     async def _speak(self, ctx, text: str):
         """Озвучка ответа в войсе — бонус: если голос недоступен, ответ уже есть в чате."""

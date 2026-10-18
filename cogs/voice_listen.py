@@ -422,6 +422,9 @@ class VoiceListenCog(commands.Cog):
         if voice_cog is None:
             return
         async with self.locks[channel.guild.id]:
+            jarvis = self.bot.get_cog("JarvisCog")     # просьба что-то сделать — выполняет Джарвис (cogs/jarvis.py)
+            if jarvis is not None and await jarvis.handle(channel, user, question, vc, source):
+                return
             try:
                 reply = await voice_cog.answer(channel.guild.id, user.display_name, question)
             except ai.AIError as e:
