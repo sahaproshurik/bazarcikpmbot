@@ -21,9 +21,50 @@ from array import array
 from collections import defaultdict, deque
 import discord
 from discord.ext import commands
+from discord.opus import Decoder as OpusDecoder
 from discord.sinks import Sink
 import ai
 from cogs.voice_ai import say, answer_embed
+
+try:
+    import davey
+except ImportError:
+    davey = None
+try:
+    from discord.voice.receive.reader import PacketDecryptor
+    from discord.voice.packets.core import OPUS_SILENCE
+except Exception:                 # нет голосовых зависимостей или другая версия py-cord
+    PacketDecryptor, OPUS_SILENCE = None, b"\xf8\xff\xfe"
+
+DAVE_MAGIC = b"\xfa\xfa"          # так заканчивается кадр, зашифрованный сквозным шифрованием DAVE
+
+
+def _decrypt_rtp_fixed(self, packet):
+    """Расшифровка входящего голоса: транспорт → срез расширения RTP по его настоящей длине → DAVE.
+    В py-cord 2.8.1 расширение срезалось ровно на 8 байт, а после DAVE — второй раз, уже из звука,
+    поэтому даже расшифрованные кадры превращались в мусор."""
+    if self.mode != "aead_xchacha20_poly1305_rtpsize":
+        return PacketDecryptor._bazarcik_original(self, packet)
+    packet.adjust_rtpsize()
+    result = self.box.decrypt(packet.decrypted_data or packet.data, bytes(packet.header),
+                              packet.nonce + b"\x00" * 20)
+    payload = result[packet.update_extended_header(result):] if packet.extended else result
+    state = self.client._connection
+    dave = state.dave_session
+    if dave is not None and dave.ready and davey is not None:
+        uid = state.ssrc_user_map.get(packet.ssrc) or self.client._ssrc_to_id.get(packet.ssrc)
+        if uid:
+            try:
+                return dave.decrypt(uid, davey.MediaType.audio, payload)
+            except Exception:
+                pass
+    return OPUS_SILENCE if payload[-2:] == DAVE_MAGIC else payload
+
+
+if (PacketDecryptor is not None and discord.__version__.startswith("2.8")
+        and not getattr(PacketDecryptor, "_bazarcik_original", None)):
+    PacketDecryptor._bazarcik_original = PacketDecryptor.decrypt_rtp
+    PacketDecryptor.decrypt_rtp = _decrypt_rtp_fixed
 
 SAMPLE_RATE     = 48000      # py-cord отдаёт PCM 48 кГц, 16 бит, стерео
 BYTES_PER_SEC   = SAMPLE_RATE * 4
@@ -78,14 +119,46 @@ class UtteranceSink(Sink):
         self.buffers: dict = {}
         self.last_voice: dict = {}
         self.users: dict = {}
-        self.frames = 0       # сколько кадров вообще пришло — если 0, приём голоса не работает
+        self.decoders: dict = {}          # uid → свой Opus-декодер на каждого говорящего
+        self.frames = 0                   # кадров со звуком — если 0, приём голоса не работает
+        self.stats = {"packets": 0, "empty": 0, "bad": 0}
+        self.last_error = None
 
     def walk_children(self, with_self: bool = False):
         return iter([self] if with_self else [])
 
+    def is_opus(self) -> bool:
+        return True       # берём у py-cord сырой Opus и декодируем сами: битый пакет не уронит весь приём
+
     def write(self, data, user):          # вызывается из потока py-cord, не из event loop
-        pcm = getattr(data, "pcm", data)
-        if user is None or getattr(user, "bot", False) or not pcm:
+        try:
+            self._write(data, user)
+        except Exception as e:            # исключение здесь остановило бы приём целиком
+            self.stats["bad"] += 1
+            self.last_error = repr(e)
+
+    def _resolve(self, user):
+        if user is None or hasattr(user, "display_name"):
+            return user
+        guild = getattr(self.vc, "guild", None)   # py-cord иногда отдаёт голый Object(id)
+        return guild.get_member(user.id) if guild is not None else None
+
+    def _decode(self, uid: int, opus) -> bytes:
+        if not opus or opus == OPUS_SILENCE:
+            return b""
+        decoder = self.decoders.get(uid)
+        if decoder is None:
+            decoder = self.decoders[uid] = OpusDecoder()
+        return decoder.decode(opus, fec=False)
+
+    def _write(self, data, user):
+        self.stats["packets"] += 1
+        user = self._resolve(user)
+        if user is None or getattr(user, "bot", False):
+            return
+        pcm = getattr(data, "pcm", b"") or self._decode(user.id, getattr(data, "opus", None))
+        if not pcm:
+            self.stats["empty"] += 1
             return
         self.frames += 1
         loud = frame_loud(pcm)
@@ -118,6 +191,12 @@ class UtteranceSink(Sink):
             self.buffers.clear()
             self.last_voice.clear()
             self.users.clear()
+        self.decoders.clear()
+
+    def report(self) -> str:
+        s = self.stats
+        text = f"пакетов {s['packets']}, со звуком {self.frames}, пустых {s['empty']}, ошибок {s['bad']}"
+        return text + (f" (последняя: {self.last_error})" if self.last_error else "")
 
 
 class ListenSession:
@@ -133,6 +212,8 @@ class ListenSession:
         self.tasks: set = set()
         self.warned_quiet = self.warned_limit = self.stopping = False
         self.loop_task = None
+        self.restarts = 0
+        self.reported_at = self.started
 
     def start(self):
         self.sink.init(self.vc)
@@ -143,8 +224,22 @@ class ListenSession:
 
     def _on_reader_stop(self, error):     # колбэк py-cord из его потока
         if error is not None and not self.stopping:
-            print(f"[listen] Приём голоса остановился с ошибкой: {error!r}")
-            self.loop.call_soon_threadsafe(self._spawn, self.stop("приём голоса прервался"))
+            print(f"[listen] Приём голоса остановился с ошибкой: {error!r} | {self.sink.report()}")
+            self.loop.call_soon_threadsafe(self._spawn, self._recover(error))
+
+    async def _recover(self, error):
+        """py-cord может уронить приём на одном пакете — перезапускаем запись, но не бесконечно."""
+        self.restarts += 1
+        if self.restarts > 3 or not self.vc.is_connected():
+            return await self.stop(f"приём голоса прервался ({type(error).__name__}: {error})")
+        await asyncio.sleep(1)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                self.vc.start_recording(self.sink, self._on_reader_stop)
+            print(f"[listen] Приём голоса перезапущен ({self.restarts}/3)")
+        except Exception as e:
+            await self.stop(f"приём голоса не перезапустился ({e})")
 
     def _spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -164,11 +259,18 @@ class ListenSession:
                     return await self.stop("в войсе никого не осталось")
                 if now - self.last_wake > IDLE_STOP_SEC:
                     return await self.stop("полчаса никто не обращался")
+                if now - self.reported_at >= 60:      # статистика приёма в логи — для диагностики
+                    self.reported_at = now
+                    print(f"[listen] {self.vc.channel}: {self.sink.report()}")
                 if not self.warned_quiet and humans and self.sink.frames == 0 and now - self.started > QUIET_HINT_SEC:
                     self.warned_quiet = True
+                    packets = self.sink.stats["packets"]
+                    detail = (f"Пакеты от Discord приходят ({packets}), но звук из них не расшифровывается"
+                              if packets else "От Discord не пришло ни одного звукового пакета")
+                    print(f"[listen] Тишина: {self.sink.report()}")
                     await self.channel.send(
-                        "🤔 Пока не слышу ни звука. Если вы говорите, а я молчу — Discord-шифрование голоса (DAVE) "
-                        "мешает приёму. Тогда отправьте **голосовое сообщение** «Базарчик, …» в чат — это работает всегда.")
+                        f"🤔 Пока не слышу ни звука. {detail} — скорее всего, мешает шифрование голоса Discord (DAVE).\n"
+                        "Отправьте **голосовое сообщение** «Базарчик, …» в чат — это работает всегда.")
                 for user, pcm in self.sink.pop_finished():
                     self._spawn(self.handle(user, pcm))
         except asyncio.CancelledError:

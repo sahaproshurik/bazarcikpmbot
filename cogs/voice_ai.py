@@ -33,11 +33,46 @@ def answer_embed(user, question: str, reply: str) -> discord.Embed:
     return embed
 
 
+# Голоса озвучки по языку ответа: (женский, мужской)
+TTS_VOICES = {
+    "ru": ("ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural"),
+    "uk": ("uk-UA-PolinaNeural",   "uk-UA-OstapNeural"),
+    "sk": ("sk-SK-ViktoriaNeural", "sk-SK-LukasNeural"),
+    "en": ("en-US-JennyNeural",    "en-US-GuyNeural"),
+}
+MALE_VOICES = {male for _, male in TTS_VOICES.values()}
+ALL_VOICES  = {v for pair in TTS_VOICES.values() for v in pair}
+UK_LETTERS  = set("іїєґ")
+RU_LETTERS  = set("ыэёъ")
+SK_LETTERS  = set("áäčďéíĺľňóôŕšťúýž")
+
+
+def detect_lang(text: str) -> str:
+    """Язык ответа по буквам: кириллица — русский или украинский, латиница — словацкий или английский."""
+    letters = [c for c in text.lower() if c.isalpha()]
+    if not letters:
+        return "ru"
+    cyrillic = sum("а" <= c <= "я" or c in "ёіїєґ" for c in letters)
+    if cyrillic * 2 >= len(letters):
+        uk = sum(c in UK_LETTERS for c in letters)
+        return "uk" if uk > sum(c in RU_LETTERS for c in letters) else "ru"
+    return "sk" if any(c in SK_LETTERS for c in letters) else "en"
+
+
+def voice_for(text: str) -> str:
+    """Голос под язык ответа; пол — как у голоса, выбранного через !aivoice."""
+    chosen, lang = TTS_SETTINGS["voice"], detect_lang(text)
+    if chosen in ALL_VOICES and chosen.startswith(TTS_VOICES[lang][0][:3]):
+        return chosen                      # выбранный голос уже нужного языка
+    female, male = TTS_VOICES[lang]
+    return male if chosen in MALE_VOICES else female
+
+
 async def say(vc: discord.VoiceClient, text: str):
     """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза."""
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tts_path = f.name
-    await edge_tts.Communicate(text[:1500], TTS_SETTINGS["voice"]).save(tts_path)
+    await edge_tts.Communicate(text[:1500], voice_for(text)).save(tts_path)
     while vc.is_playing():
         await asyncio.sleep(0.3)
 
@@ -113,19 +148,27 @@ class VoiceAICog(commands.Cog):
         self._shared_histories[ctx.guild.id].clear()
         await ctx.send("🗑️ Общая память чата очищена. Бот всех забыл!")
 
-    @commands.command(name="aivoice", brief="Сменить голос AI")
+    @commands.command(name="aivoice", brief="Сменить голос AI",
+                      help="`!aivoice` — список голосов, `!aivoice имя` — выбрать. Язык озвучки бот подбирает "
+                           "сам по ответу (русский, украинский, словацкий, английский), а выбранный голос задаёт пол.")
     async def voice_change(self, ctx, *, voice_name: str = None):
         if not voice_name:
             await ctx.send(
-                "🗣️ **Доступные голоса:**\n"
-                "• `ru-RU-SvetlanaNeural` (женский)\n"
-                "• `ru-RU-DmitryNeural` (мужской)\n"
-                "• `ru-RU-DariyaNeural` (женский)\n\n"
-                "Пример: `!aivoice ru-RU-DmitryNeural`"
+                "🗣️ **Голоса озвучки** (язык подбирается сам по ответу, выбор задаёт пол):\n"
+                "• 🇷🇺 `ru-RU-SvetlanaNeural` (ж) • `ru-RU-DmitryNeural` (м)\n"
+                "• 🇺🇦 `uk-UA-PolinaNeural` (ж) • `uk-UA-OstapNeural` (м)\n"
+                "• 🇸🇰 `sk-SK-ViktoriaNeural` (ж) • `sk-SK-LukasNeural` (м)\n"
+                "• 🇺🇸 `en-US-JennyNeural` (ж) • `en-US-GuyNeural` (м)\n\n"
+                f"Сейчас: `{TTS_SETTINGS['voice']}`. Пример: `!aivoice ru-RU-DmitryNeural`"
             )
             return
-        TTS_SETTINGS["voice"] = voice_name
-        await ctx.send(f"✅ Голос изменён на `{voice_name}`")
+        match = next((v for v in ALL_VOICES if v.lower() == voice_name.strip().lower()), None)
+        if match is None:
+            await ctx.send("❌ Нет такого голоса. Список: `!aivoice`", delete_after=10)
+            return
+        TTS_SETTINGS["voice"] = match
+        await ctx.send(f"✅ Голос изменён на `{match}` — "
+                       f"{'мужской' if match in MALE_VOICES else 'женский'} во всех языках озвучки.")
 
     # ── Voice state ───────────────────────────────────────────
     @commands.Cog.listener()
