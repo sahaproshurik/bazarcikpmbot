@@ -78,6 +78,8 @@ IDLE_STOP_SEC   = 30 * 60    # полчаса никто не обращался
 STT_LIMIT       = (40, 300)  # не больше 40 распознаваний за 5 минут — бережём лимиты Groq
 QUIET_HINT_SEC  = 45         # столько ждём хоть какого-то звука, прежде чем подсказать про DAVE
 WAKE_HINT       = "Базарчик, BazarčikPM"
+LANG_PRIORITY   = {"uk": 0, "ru": 1, "sk": 2, "en": 2}  # меньше — важнее: укр → рус → словацкий = английский
+LANG_MARGIN     = 0.15       # фора по уверенности Whisper (avg_logprob) за каждую ступень приоритета
 WAKE_RE = re.compile(
     r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р\s?ч\w*|baz[aá]r\s?[cč]h?\w*)[\s,.!?:;…—-]*",
     re.IGNORECASE)
@@ -87,6 +89,57 @@ def split_wake(text: str):
     """Вопрос после обращения «Базарчик, …»; None — фраза не к боту, "" — позвали без вопроса."""
     m = WAKE_RE.match(text or "")
     return None if m is None else text[m.end():].strip()
+
+
+def script_langs(text: str) -> tuple:
+    """Языки, из которых выбираем по алфавиту фразы: кириллица — укр/рус, латиница — словацкий/английский."""
+    letters = [c for c in text.lower() if c.isalpha()]
+    cyrillic = sum("а" <= c <= "я" or c in "ёіїєґ" for c in letters)
+    return ("uk", "ru") if letters and cyrillic * 2 >= len(letters) else ("sk", "en")
+
+
+def lang_rank(heard: ai.Transcript) -> float:
+    """Уверенность Whisper со штрафом за низкий приоритет языка: больше — лучше."""
+    score = heard.score if heard.score is not None else -1.0
+    return score - LANG_MARGIN * LANG_PRIORITY.get(heard.lang, 3)
+
+
+async def recheck_language(audio: bytes, filename: str, heard: ai.Transcript, allowed=lambda: True):
+    """Whisper сам угадывает язык и на коротких фразах путает украинский с русским, словацкий с чешским.
+    Если он выбрал язык ниже по приоритету или вне списка, распознаём фразу ещё раз на более важных
+    языках того же алфавита и берём лучший вариант с учётом приоритета. allowed() — лимит распознаваний."""
+    level = LANG_PRIORITY.get(heard.lang, 3)
+    best = heard
+    for lang in script_langs(heard.text):
+        if LANG_PRIORITY[lang] >= level or not allowed():
+            continue
+        try:
+            other = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+        except ai.AIError as e:
+            print(f"[listen] Перепроверка на языке {lang} не удалась: {e}")
+            continue
+        if other.text and lang_rank(other) > lang_rank(best):
+            best = other
+    if best is not heard:
+        score = lambda t: "?" if t.score is None else f"{t.score:.2f}"
+        print(f"[listen] Язык фразы: {heard.lang} ({score(heard)}) → {best.lang} ({score(best)})")
+    return best
+
+
+async def recognize(audio: bytes, filename: str, waiting: bool = False, allowed=lambda: True):
+    """Распознаёт фразу и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
+    waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения."""
+    heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, detailed=True)
+    question = split_wake(heard.text)
+    called = question is not None
+    if not called and waiting and heard.text:
+        question = heard.text
+    if not question:
+        return question
+    better = await recheck_language(audio, filename, heard, allowed)
+    if better is not heard:
+        question = (split_wake(better.text) if called else better.text) or question
+    return question
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -296,25 +349,26 @@ class ListenSession:
                 await self.channel.send("⏳ Слишком много разговоров — часть фраз пропускаю, чтобы не упереться "
                                         "в лимиты распознавания.", delete_after=30)
             return
+        audio = to_wav(pcm)
+        del pcm
         try:
-            text = await ai.transcribe(to_wav(pcm), "speech.wav", hint=WAKE_HINT)
+            waiting = time.monotonic() <= self.followup.get(user.id, 0)
+            question = await recognize(audio, "speech.wav", waiting, self._stt_allowed)
         except ai.AIError as e:
             print(f"[listen] Распознавание не удалось: {e}")
             return
         finally:
-            del pcm                       # звук больше нигде не хранится
-        question = split_wake(text)
+            del audio                     # звук больше нигде не хранится
         if question is None:
-            if not text or time.monotonic() > self.followup.pop(user.id, 0):
-                return                    # обычный разговор — не к боту, расшифровку выбрасываем
-            question = text
-        elif not question:
+            return                        # обычный разговор — не к боту, расшифровку выбрасываем
+        if not question:
             self.followup[user.id] = time.monotonic() + FOLLOWUP_SEC
             try:
                 await say(self.vc, "Да? Слушаю.")
             except Exception as e:
                 print(f"[listen] Не удалось ответить голосом: {e!r}")
             return
+        self.followup.pop(user.id, None)
         self.last_wake = time.monotonic()
         await self.cog.reply(self.channel, user, question, self.vc, "🎙️ из войса")
 
@@ -444,11 +498,11 @@ class VoiceListenCog(commands.Cog):
             return
         try:
             audio = await attachment.read()
-            text = await ai.transcribe(audio, attachment.filename or "voice.ogg", hint=WAKE_HINT)
+            question = await recognize(audio, attachment.filename or "voice.ogg")
         except (discord.HTTPException, ai.AIError) as e:
             print(f"[listen] Голосовое сообщение не распознано: {e}")
             return
-        question = split_wake(text)
+        del audio
         if not question:
             return                        # голосовое не боту — расшифровку не храним
         vc = message.guild.voice_client

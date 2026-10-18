@@ -8,6 +8,7 @@ ai.py — единая точка работы с ИИ (Groq) для всех co
 """
 import os
 import random
+from typing import NamedTuple, Optional
 from groq import (AsyncGroq, APIConnectionError, APIStatusError, AuthenticationError,
                   BadRequestError, NotFoundError, PermissionDeniedError, RateLimitError)
 
@@ -124,18 +125,58 @@ async def ask(system: str, prompt: str, **kw) -> str:
     return await chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], **kw)
 
 
-async def transcribe(audio: bytes, filename: str = "speech.wav", hint: str = "") -> str:
+class Transcript(NamedTuple):
+    text: str
+    lang: Optional[str]      # ISO-код языка, на котором Whisper распознал фразу
+    score: Optional[float]   # уверенность Whisper (avg_logprob): ближе к 0 — увереннее
+
+
+# в verbose_json Whisper называет язык словом («Ukrainian»), а на вход принимает ISO-код
+LANG_CODES = {"ukrainian": "uk", "russian": "ru", "slovak": "sk", "english": "en", "czech": "cs",
+              "polish": "pl", "belarusian": "be", "bulgarian": "bg", "serbian": "sr", "german": "de"}
+
+
+def _get(obj, key):
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
+def _lang_code(name) -> Optional[str]:
+    name = (name or "").strip().lower()
+    return name if len(name) == 2 else LANG_CODES.get(name)
+
+
+def _score(resp) -> Optional[float]:
+    """avg_logprob сегментов, взвешенный по их длительности."""
+    total = weight = 0.0
+    for seg in _get(resp, "segments") or []:
+        logprob = _get(seg, "avg_logprob")
+        if logprob is None:
+            continue
+        duration = max(float(_get(seg, "end") or 0) - float(_get(seg, "start") or 0), 0.1)
+        total += float(logprob) * duration
+        weight += duration
+    return total / weight if weight else None
+
+
+async def transcribe(audio: bytes, filename: str = "speech.wav", hint: str = "",
+                     language: str = None, detailed: bool = False):
     """Распознаёт речь через Whisper на Groq. Аудио нигде не сохраняется — только уходит на распознавание.
-    hint — подсказка Whisper'у, как пишутся имена (например, «Базарчик»). Тишина → пустая строка."""
+    hint — подсказка Whisper'у, как пишутся имена (например, «Базарчик»). Тишина → пустая строка.
+    language — ISO-код, если язык задаём сами, а не доверяем угадыванию Whisper.
+    detailed — вернуть Transcript с языком и уверенностью вместо голого текста."""
     async def call(client, model):
+        extra = {"language": language} if language else {}
         resp = await client.audio.transcriptions.create(
-            file=(filename, audio), model=model, prompt=hint or None,
-            temperature=0, response_format="json")
-        return (getattr(resp, "text", "") or "").strip()
+            file=(filename, audio), model=model, prompt=hint or None, temperature=0,
+            response_format="verbose_json" if detailed else "json", **extra)
+        text = (getattr(resp, "text", "") or "").strip()
+        if not detailed:
+            return text
+        return Transcript(text, _lang_code(_get(resp, "language")) or language, _score(resp))
 
     models = [m for m in STT_MODELS if m not in _dead_stt] or STT_MODELS
-    _, text = await _run(models, call, _dead_stt)
-    return text
+    _, result = await _run(models, call, _dead_stt)
+    return result
 
 
 def status() -> str:
