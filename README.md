@@ -21,7 +21,7 @@ python main.py
 | `DISCORD_BOT_TOKEN` | да | Токен бота |
 | `GROQ_API_KEYS` | для ИИ | Ключи Groq через запятую (старое имя `GROQ_API_KEY` тоже работает) |
 | `GROQ_MODEL` | нет | Модель Groq; по умолчанию `openai/gpt-oss-120b`, при отключении модели бот сам перейдёт на следующую |
-| `AI_SYSTEM_PROMPT` | нет | Характер ИИ |
+| `AI_SYSTEM_PROMPT` | нет | Характер ИИ. Встроенный (`config.py`) — BazarčikPM Bot: зеркалит тон, защищает Юру, знает команды бота. Переменная полностью его заменяет |
 | `TTS_VOICE` | нет | Голос озвучки, по умолчанию `ru-RU-SvetlanaNeural` |
 | `SPT_STATUS_GIST_ID` | нет | Gist со статусом SPT-сервера (старая `SPT_STATUS_GIST_URL` тоже понимается) |
 | `SPT_STATUS_GIST_FILENAME`, `SPT_STATUS_GITHUB_TOKEN` | нет | Имя файла в gist и токен для частых проверок |
