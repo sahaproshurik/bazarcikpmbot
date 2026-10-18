@@ -38,7 +38,6 @@ class LoansCog(commands.Cog):
 
     @commands.command(name="applyloan", brief="Оформить кредит")
     async def applyloan(self, ctx, loan_amount: int, loan_term: int):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
 
         if player_loans.get(uid):
@@ -76,7 +75,6 @@ class LoansCog(commands.Cog):
 
     @commands.command(name="calculatecredit", brief="Рассчитать кредит до оформления")
     async def calc_credit(self, ctx, loan_amount: int, loan_term: int):
-        await ctx.message.delete()
         age   = await get_user_age_on_server(ctx, ctx.author.id) or 0
         rate  = get_loan_rate(age)
         daily = calc_daily_payment(loan_amount, loan_term, rate)
@@ -87,7 +85,6 @@ class LoansCog(commands.Cog):
 
     @commands.command(name="checkloan", brief="Посмотреть статус своего кредита")
     async def check_loan(self, ctx):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         if not player_loans.get(uid):
             await ctx.send(f"{ctx.author.mention}, кредитов нет.", delete_after=5); return
@@ -118,7 +115,6 @@ class LoansCog(commands.Cog):
 
     @commands.command(name="payloan", brief="Погасить кредит (частично или полностью)")
     async def pay_loan(self, ctx, amount: int):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         if not player_loans.get(uid):
             await ctx.send("❌ Нет активного кредита.", delete_after=5); return
@@ -146,7 +142,11 @@ class LoansCog(commands.Cog):
         now = datetime.now()
         for uid, loans in list(player_loans.items()):
             for loan in loans:
-                due  = datetime.strptime(loan["due_date"], "%Y-%m-%d")
+                try:
+                    due = datetime.strptime(loan["due_date"], "%Y-%m-%d")
+                except (KeyError, TypeError, ValueError):
+                    print(f"[loans] Пропускаю кредит с некорректной датой у {uid}: {loan}")
+                    continue
                 diff = due - now
                 user = self.bot.get_user(int(uid))
                 if not user: continue
@@ -157,6 +157,10 @@ class LoansCog(commands.Cog):
                         await user.send(f"⚠️ Кредит истекает завтра ({loan['due_date']})!")
                 except Exception:
                     pass
+
+    @send_loan_warnings.before_loop
+    async def _wait_ready(self):
+        await self.bot.wait_until_ready()
 
 
 def setup(bot):

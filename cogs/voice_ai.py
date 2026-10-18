@@ -2,15 +2,17 @@ import asyncio
 import os
 import re
 import tempfile
-from collections import defaultdict
+from collections import defaultdict, deque
 import discord
 from discord.ext import commands
 import edge_tts
-from config import get_groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
+import ai
+from config import AI_SYSTEM_PROMPT, TTS_SETTINGS
 from data import AUTO_CHANNELS, YOUR_USER_ID
 
 AUDIO_FILE = os.path.abspath("greeting.mp3")
 _greeting_lock = asyncio.Lock()
+HISTORY_MESSAGES = 12   # сколько последних реплик (вопросы + ответы) ИИ помнит на сервер
 
 
 def generate_greeting():
@@ -27,75 +29,68 @@ def generate_greeting():
 class VoiceAICog(commands.Cog):
     def __init__(self, bot):
         self.bot              = bot
-        self._shared_histories = defaultdict(list)
+        self._shared_histories = defaultdict(lambda: deque(maxlen=HISTORY_MESSAGES))
 
     # ── AI Chat ───────────────────────────────────────────────
-    @commands.command(name="ask", aliases=["a", "спроси"], brief="Общий чат с AI (бот помнит всех)")
+    @commands.command(
+        name="ask", aliases=["a", "спроси"], brief="Спросить ИИ (бот помнит общий разговор)",
+        help="`!ask вопрос` — ИИ отвечает в чате. Если ты в голосовом канале, бот ещё и озвучит ответ.\n"
+             "ИИ помнит последние реплики всех участников сервера. Очистить память: `!aiclear`.")
     async def ask_ai(self, ctx, *, question: str):
-        await ctx.message.delete()
-
-        if not ctx.author.voice:
-            await ctx.send("❌ Зайди в войс, чтобы я мог ответить голосом!", delete_after=5)
-            return
-
-        vc = ctx.guild.voice_client
-        if not vc or not vc.is_connected():
-            try:
-                vc = await ctx.author.voice.channel.connect()
-            except Exception as e:
-                await ctx.send(f"❌ Ошибка подключения: {e}", delete_after=5)
-                return
-
-        status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *Пишет ответ...*")
-        history    = self._shared_histories[ctx.guild.id]
-        user_message = f"[{ctx.author.display_name}]: {question}"
-        history.append({"role": "user", "content": user_message})
-        if len(history) > 6:
-            history.pop(0)
+        status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *Думаю…*")
+        history = self._shared_histories[ctx.guild.id if ctx.guild else ctx.author.id]
+        user_message = {"role": "user", "content": f"[{ctx.author.display_name}]: {question}"}
 
         try:
-            messages_for_api = [{"role": "system", "content": AI_SYSTEM_PROMPT}] + history
-            reply_obj = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: get_groq_client().chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    max_tokens=400,
-                    messages=messages_for_api,
-                )
-            )
-            reply = reply_obj.choices[0].message.content.strip()
-            history.append({"role": "assistant", "content": reply})
-            await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n🤖 **AI**: {reply}")
+            reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
+        except ai.AIError as e:
+            await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n❌ {e}")
+            return
 
-            tts_path  = tempfile.mktemp(suffix=".mp3")
-            communicate = edge_tts.Communicate(reply, TTS_SETTINGS["voice"])
-            await communicate.save(tts_path)
+        history.extend([user_message, {"role": "assistant", "content": reply}])
+        embed = discord.Embed(description=reply[:4000], color=discord.Color.teal())
+        embed.set_author(name=f"{ctx.author.display_name}: {question}"[:256],
+                         icon_url=ctx.author.display_avatar.url)
+        embed.set_footer(text="🤖 ИИ • !aiclear — очистить память")
+        await status_msg.edit(content=None, embed=embed)
 
+        if ctx.guild and ctx.author.voice:
+            await self._speak(ctx, reply)
+
+    async def _speak(self, ctx, text: str):
+        """Озвучка ответа в войсе — бонус: если голос недоступен, ответ уже есть в чате."""
+        vc = ctx.guild.voice_client
+        try:
+            if not vc or not vc.is_connected():
+                vc = await asyncio.wait_for(ctx.author.voice.channel.connect(), timeout=15)
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                tts_path = f.name
+            await edge_tts.Communicate(text[:1500], TTS_SETTINGS["voice"]).save(tts_path)
             while vc.is_playing():
                 await asyncio.sleep(0.5)
 
-            if vc.is_connected():
-                def after_play(e):
-                    try: os.unlink(tts_path)
-                    except Exception: pass
-                vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
-
+            def after_play(_):
+                try: os.unlink(tts_path)
+                except OSError: pass
+            vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
         except Exception as e:
-            await status_msg.edit(content=f"❌ Ошибка ИИ: `{e}`")
+            print(f"[voice_ai] Озвучка не удалась: {e!r}")
+            await ctx.send("🔇 Не получилось озвучить ответ в войсе — он есть в чате.", delete_after=8)
 
     @commands.command(name="join", aliases=["j"], brief="Позвать бота в голосовой канал")
     async def voice_join(self, ctx):
-        await ctx.message.delete()
         if not ctx.author.voice:
             await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5); return
         if ctx.guild.voice_client:
             await ctx.send("⚠️ Я уже в канале. Пиши `!ask <вопрос>`.", delete_after=5); return
-        await ctx.author.voice.channel.connect()
+        try:
+            await asyncio.wait_for(ctx.author.voice.channel.connect(), timeout=15)
+        except Exception as e:
+            await ctx.send(f"❌ Не удалось подключиться к войсу: {e}", delete_after=8); return
         await ctx.send("✅ Подключился! Пиши `!ask <вопрос>`, и я отвечу голосом.")
 
     @commands.command(name="leave", aliases=["l", "выйти"], brief="Выгнать бота из войса")
     async def voice_leave(self, ctx):
-        await ctx.message.delete()
         if ctx.guild.voice_client:
             await ctx.guild.voice_client.disconnect()
             await ctx.send("👋 Вышел из голосового канала.")
@@ -104,13 +99,11 @@ class VoiceAICog(commands.Cog):
 
     @commands.command(name="aiclear", brief="Очистить общую память чата")
     async def voice_clear(self, ctx):
-        await ctx.message.delete()
         self._shared_histories[ctx.guild.id].clear()
         await ctx.send("🗑️ Общая память чата очищена. Бот всех забыл!")
 
     @commands.command(name="aivoice", brief="Сменить голос AI")
     async def voice_change(self, ctx, *, voice_name: str = None):
-        await ctx.message.delete()
         if not voice_name:
             await ctx.send(
                 "🗣️ **Доступные голоса:**\n"
@@ -130,8 +123,10 @@ class VoiceAICog(commands.Cog):
         # === Создание авто-канала ===
         if after.channel and after.channel.id in AUTO_CHANNELS:
             guild    = member.guild
-            cat_id   = AUTO_CHANNELS[after.channel.id]
-            category = guild.get_channel(cat_id)
+            category = guild.get_channel(AUTO_CHANNELS[after.channel.id])
+            if category is None:
+                print(f"[voice] Категория для авто-канала {after.channel.id} не найдена")
+                return
             new_name = after.channel.name.replace("Create", "")
             prefix   = "_ZP" if new_name == "🔊 Poslucháreň" else " "
 
@@ -173,12 +168,13 @@ class VoiceAICog(commands.Cog):
                     await asyncio.sleep(1)
 
                     if not os.path.exists(AUDIO_FILE):
-                        generate_greeting()
+                        await asyncio.to_thread(generate_greeting)   # gTTS ходит в сеть синхронно
 
                     finished = asyncio.Event()
+                    loop = asyncio.get_running_loop()
                     def after_play(error):
                         if error: print(f"[AUDIO] Ошибка: {error}")
-                        self.bot.loop.call_soon_threadsafe(finished.set)
+                        loop.call_soon_threadsafe(finished.set)
 
                     source = discord.FFmpegPCMAudio(AUDIO_FILE, executable="ffmpeg", options="-loglevel panic")
                     vc.play(source, after=after_play)

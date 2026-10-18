@@ -17,7 +17,6 @@ class ShopCog(commands.Cog):
     # ── Shop ──────────────────────────────────────────────────
     @commands.command(name="shop", brief="Показать магазин предметов")
     async def shop(self, ctx):
-        await ctx.message.delete()
         embed = discord.Embed(title="🏪 Магазин BAZARCIK_PM", color=discord.Color.green())
         for iid, item in SHOP_ITEMS.items():
             embed.add_field(
@@ -29,7 +28,6 @@ class ShopCog(commands.Cog):
 
     @commands.command(name="buy", brief="Купить предмет из магазина")
     async def buy_shop_item(self, ctx, item_id: str):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         if item_id not in SHOP_ITEMS:
@@ -47,7 +45,6 @@ class ShopCog(commands.Cog):
 
     @commands.command(name="inventory", brief="Показать свой инвентарь")
     async def inventory(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None:
             member = ctx.author
         uid = str(member.id)
@@ -61,7 +58,6 @@ class ShopCog(commands.Cog):
 
     @commands.command(name="use", brief="Использовать предмет из инвентаря")
     async def use_item(self, ctx, item_id: str, member: discord.Member = None):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         inv = player_inventory.get(uid, {})
 
@@ -88,7 +84,6 @@ class ShopCog(commands.Cog):
     # ── Lottery ───────────────────────────────────────────────
     @commands.command(name="lotto", brief="Добавить билет в общую лотерею")
     async def lottery(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         gid = str(ctx.guild.id)
@@ -112,7 +107,6 @@ class ShopCog(commands.Cog):
     @commands.command(name="drawlotto", brief="[Админ] Провести розыгрыш лотереи")
     @commands.has_permissions(administrator=True)
     async def draw_lottery(self, ctx):
-        await ctx.message.delete()
         gid = str(ctx.guild.id)
         if gid not in LOTTO_POOL or not LOTTO_POOL[gid]:
             await ctx.send("🎟 Нет билетов в пуле!", delete_after=5); return
@@ -138,7 +132,6 @@ class ShopCog(commands.Cog):
     # ── Fishing ───────────────────────────────────────────────
     @commands.command(name="fish", brief="Порыбачить и заработать деньги")
     async def fish(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 

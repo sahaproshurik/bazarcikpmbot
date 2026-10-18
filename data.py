@@ -3,6 +3,7 @@ data.py — все глобальные данные, константы, save/l
 Импортируется во все cog-модули.
 """
 import json
+import os
 import time
 
 # ── File paths ────────────────────────────────────────────────
@@ -17,6 +18,9 @@ DAILY_FILE      = "player_daily.json"
 BANK_FILE       = "player_bank.json"
 SERVER_EFF_FILE = "server_effects.json"
 WARNS_FILE      = "player_warns.json"
+MCD_FILE        = "mcd_data.json"
+GUILD_CFG_FILE  = "guild_config.json"
+MOD_FILE        = "mod_data.json"
 
 
 # ── JSON helpers ──────────────────────────────────────────────
@@ -26,13 +30,22 @@ def load_json(path, default=None):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return default if not isinstance(default, type) else default()
+    except json.JSONDecodeError as e:
+        # Не начинаем молча с пустых данных поверх битого файла: сохраняем его копию для восстановления
+        backup = f"{path}.corrupt-{int(time.time())}"
+        os.replace(path, backup)
+        print(f"⚠️ [data] {path} повреждён ({e}). Копия сохранена в {backup}, начинаю с пустых данных.")
         return default if not isinstance(default, type) else default()
 
 
 def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
+    # Пишем во временный файл и атомарно подменяем: падение посреди записи не испортит JSON
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 # ── Player data ───────────────────────────────────────────────
@@ -47,6 +60,11 @@ player_bank       = load_json(BANK_FILE)
 server_effects    = load_json(SERVER_EFF_FILE)
 player_warns      = load_json(WARNS_FILE)
 USER_ORDERS_COMPLETED = load_json(ORDERS_FILE)
+mcd_data          = load_json(MCD_FILE)
+guild_config      = load_json(GUILD_CFG_FILE)          # {guild_id: {log_channel, automod, autorole, ...}}
+mod_data          = load_json(MOD_FILE)                # кейсы, временные баны, локдауны
+for _key, _default in (("cases", []), ("tempbans", []), ("lockdown", {})):
+    mod_data.setdefault(_key, _default)
 
 
 # ── Save functions ────────────────────────────────────────────
@@ -60,6 +78,9 @@ def save_daily():       save_json(DAILY_FILE,       player_daily)
 def save_bank():        save_json(BANK_FILE,        player_bank)
 def save_server_eff():  save_json(SERVER_EFF_FILE,  server_effects)
 def save_warns():       save_json(WARNS_FILE,       player_warns)
+def save_mcd():         save_json(MCD_FILE,         mcd_data)
+def save_guild_cfg():   save_json(GUILD_CFG_FILE,   guild_config)
+def save_mod():         save_json(MOD_FILE,         mod_data)
 
 
 # ── Mafia state ───────────────────────────────────────────────

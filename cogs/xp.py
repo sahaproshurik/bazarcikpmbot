@@ -44,7 +44,6 @@ class XPCog(commands.Cog):
                     )
                 except Exception:
                     pass
-        await self.bot.process_commands(message)
 
     @commands.command(
         name="level",
@@ -60,7 +59,6 @@ class XPCog(commands.Cog):
         ),
     )
     async def show_level(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None:
             member = ctx.author
         uid      = str(member.id)

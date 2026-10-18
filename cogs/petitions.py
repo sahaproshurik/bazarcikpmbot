@@ -20,7 +20,6 @@ class PetitionsCog(commands.Cog):
 
     @commands.command(name="petition", brief="Создать петицию")
     async def petition(self, ctx, *, text: str = None):
-        await ctx.message.delete()
         if not text:
             await ctx.send("❗ `!petition <текст>`", delete_after=10); return
 
@@ -45,7 +44,6 @@ class PetitionsCog(commands.Cog):
 
     @commands.command(name="vote", brief="Подписать петицию")
     async def vote_petition(self, ctx, petition_id: int = None):
-        await ctx.message.delete()
         if petition_id is None:
             await ctx.send("❗ `!vote <номер>`", delete_after=10); return
 
@@ -82,7 +80,6 @@ class PetitionsCog(commands.Cog):
         await self._handle_admin_vote(ctx, petition_id, "no")
 
     async def _handle_admin_vote(self, ctx, petition_id: int, vote_type: str):
-        await ctx.message.delete()
         if not ctx.author.guild_permissions.administrator:
             await ctx.send("Только администратор!", delete_after=5); return
 
@@ -124,7 +121,6 @@ class PetitionsCog(commands.Cog):
 
     @commands.command(name="petitions", brief="Список активных петиций")
     async def list_petitions(self, ctx):
-        await ctx.message.delete()
         petitions = self._load()
         active = [p for p in petitions if p["status"] == "active"]
         if not active:

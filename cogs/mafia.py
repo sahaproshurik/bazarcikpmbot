@@ -5,7 +5,8 @@ import tempfile
 import discord
 from discord.ext import commands
 import edge_tts
-from config import get_groq_client, AI_SYSTEM_PROMPT, TTS_SETTINGS
+import ai
+from config import AI_SYSTEM_PROMPT, TTS_SETTINGS
 from data import MAFIA_DATA
 
 
@@ -47,19 +48,9 @@ async def mafia_ai_narrator(prompt_type: str, context_data: str = "") -> str:
         ),
     }
     try:
-        response = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: get_groq_client().chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": AI_SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompts.get(prompt_type, context_data)},
-                ],
-                max_tokens=300,
-            )
-        )
-        return response.choices[0].message.content.strip()
-    except Exception:
+        return await ai.ask(AI_SYSTEM_PROMPT, prompts.get(prompt_type, context_data), max_tokens=400)
+    except ai.AIError as e:
+        print(f"[mafia] Рассказчик ИИ недоступен: {e}")
         return "Произошла техническая шоколадка, но город проснулся!"
 
 
@@ -244,7 +235,6 @@ class MafiaCog(commands.Cog):
     # ── Commands ──────────────────────────────────────────────
     @commands.command(name="mafia_start")
     async def mafia_start(self, ctx):
-        await ctx.message.delete()
         if MAFIA_DATA["is_running"]:
             return await ctx.send("❌ Игра уже идёт! Останови её командой `!mafia_stop`.", delete_after=5)
 
@@ -267,7 +257,6 @@ class MafiaCog(commands.Cog):
 
     @commands.command(name="mafia_go")
     async def mafia_go(self, ctx):
-        await ctx.message.delete()
         if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "waiting":
             return await ctx.send("❌ Нет активного набора! Сначала `!mafia_start`.", delete_after=5)
 
@@ -407,7 +396,6 @@ class MafiaCog(commands.Cog):
     @commands.command(name="morning")
     async def mafia_morning(self, ctx):
         """[Резерв] Ведущий вручную завершает ночь."""
-        await ctx.message.delete()
         if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "night":
             return await ctx.send("❌ Сейчас не ночная фаза!", delete_after=5)
 
@@ -422,7 +410,6 @@ class MafiaCog(commands.Cog):
     # ── Voting ────────────────────────────────────────────────
     @commands.command(name="mafia_vote")
     async def mafia_vote(self, ctx, number: int):
-        await ctx.message.delete()
         if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "day":
             return await ctx.send("❌ Голосование доступно только днём!", delete_after=5)
 
@@ -506,7 +493,6 @@ class MafiaCog(commands.Cog):
     @commands.command(name="mafia_end_day")
     async def mafia_end_day(self, ctx):
         """[Резерв] Принудительно завершить голосование."""
-        await ctx.message.delete()
         if not MAFIA_DATA["is_running"] or MAFIA_DATA["phase"] != "day":
             return await ctx.send("❌ Сейчас не дневная фаза!", delete_after=5)
         if not MAFIA_DATA["votes"]:
@@ -549,7 +535,6 @@ class MafiaCog(commands.Cog):
     # ── Status / Stop ─────────────────────────────────────────
     @commands.command(name="mafia_status")
     async def mafia_status(self, ctx):
-        await ctx.message.delete()
         if not MAFIA_DATA["is_running"]:
             return await ctx.send("❌ Игра не запущена.", delete_after=5)
 
@@ -592,7 +577,6 @@ class MafiaCog(commands.Cog):
 
     @commands.command(name="mafia_stop")
     async def mafia_stop(self, ctx):
-        await ctx.message.delete()
         MAFIA_DATA.update({
             "is_running": False, "phase": "waiting", "players": {},
             "actions": {"kill": None, "heal": None, "check": None},

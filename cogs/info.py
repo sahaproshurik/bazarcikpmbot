@@ -11,7 +11,6 @@ class InfoCog(commands.Cog):
 
     @commands.command(name="profile", brief="Показать профиль игрока")
     async def profile(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None: member = ctx.author
         await init_player(self.bot, ctx)
         uid    = str(member.id)
@@ -35,7 +34,6 @@ class InfoCog(commands.Cog):
 
     @commands.command(name="userinfo", brief="Информация об участнике сервера")
     async def user_info(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None: member = ctx.author
         embed = discord.Embed(title=f"👤 {member.display_name}", color=discord.Color.blue())
         embed.set_thumbnail(url=member.display_avatar.url)
@@ -48,7 +46,6 @@ class InfoCog(commands.Cog):
 
     @commands.command(name="serverinfo", brief="Информация о сервере")
     async def server_info(self, ctx):
-        await ctx.message.delete()
         g     = ctx.guild
         embed = discord.Embed(title=f"🖥️ {g.name}", color=discord.Color.green())
         embed.add_field(name="ID",        value=str(g.id))
@@ -62,7 +59,6 @@ class InfoCog(commands.Cog):
 
     @commands.command(name="moneyhelp", brief="Гайд по денежной системе")
     async def moneyhelp(self, ctx):
-        await ctx.message.delete()
         try:
             with open("moneyhelp.txt", "r", encoding="utf-8") as f:
                 await ctx.send(f.read())

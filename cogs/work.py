@@ -1,7 +1,7 @@
 import random
 import asyncio
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.ui import View, Button
 from discord import Interaction
 from data import (
@@ -9,7 +9,7 @@ from data import (
     SPORT_ITEMS_WITH_BRANDS, ORDERS, ORDER_MESSAGES, order_history,
     save_funds, save_priemer,
 )
-from cogs.economy import init_player
+from cogs.economy import init_player, work_tax
 
 
 def generate_order():
@@ -126,8 +126,7 @@ class PickingView(View):
         if player_inventory.get(uid, {}).get("pickaxe", 0) > 0:
             earnings = int(earnings * 1.2)
 
-        rate       = 0.07 if earnings <= 47000 else 0.19
-        tax_amount = int(earnings * rate)
+        tax_amount = work_tax(earnings)
         net        = earnings - tax_amount
 
         player_funds[uid] = player_funds.get(uid, 0) + net
@@ -262,11 +261,14 @@ class PackingView(View):
 class WorkCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.bot.loop.create_task(self._update_priemer())
+        self.decay_counter = 0
+        self.update_priemer.start()
+
+    def cog_unload(self):
+        self.update_priemer.cancel()
 
     @commands.command(name="gb", brief="Пойти работать на склад")
     async def start_job(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         job = random.choice(["пикинг", "баление"])
@@ -293,7 +295,6 @@ class WorkCog(commands.Cog):
 
     @commands.command(name="priemer", brief="Посмотреть показатель эффективности работы")
     async def priemer_cmd(self, ctx):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         pm  = priemer_data.get(uid, 0)
         embed = discord.Embed(title=f"📦 Приемер {ctx.author.display_name}", color=discord.Color.orange())
@@ -305,24 +306,26 @@ class WorkCog(commands.Cog):
         embed.add_field(name="Статус", value=lv)
         await ctx.send(embed=embed)
 
-    async def _update_priemer(self):
+    @tasks.loop(minutes=1)
+    async def update_priemer(self):
+        self.decay_counter += 1
+        for uid in list(priemer_data.keys()):
+            orders = order_history.get(uid, [])
+            if orders:
+                avg_o   = len(orders)
+                avg_pos = sum(orders) / avg_o
+                priemer_data[uid] = int(min(150, priemer_data[uid] + (avg_o * avg_pos) / 10))
+            elif self.decay_counter >= 60:
+                priemer_data[uid] = int(max(0, priemer_data[uid] - 1))
+        if self.decay_counter >= 60:
+            self.decay_counter = 0
+        save_priemer()
+        order_history.clear()
+
+    @update_priemer.before_loop
+    async def _wait_ready(self):
         await self.bot.wait_until_ready()
-        decay_counter = 0
-        while not self.bot.is_closed():
-            await asyncio.sleep(60)
-            decay_counter += 1
-            for uid in list(priemer_data.keys()):
-                orders = order_history.get(uid, [])
-                if orders:
-                    avg_o   = len(orders)
-                    avg_pos = sum(orders) / avg_o
-                    priemer_data[uid] = int(min(150, priemer_data[uid] + (avg_o * avg_pos) / 10))
-                elif decay_counter >= 60:
-                    priemer_data[uid] = int(max(0, priemer_data[uid] - 1))
-            if decay_counter >= 60:
-                decay_counter = 0
-            save_priemer()
-            order_history.clear()
+        await asyncio.sleep(60)   # первое обновление — через минуту после старта, как раньше
 
 
 def setup(bot):

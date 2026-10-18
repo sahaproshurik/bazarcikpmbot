@@ -19,27 +19,22 @@ class FunCog(commands.Cog):
 
     @commands.command(name="joke", aliases=["randomjoke", "jokes"], brief="Случайная шутка")
     async def tell_joke(self, ctx):
-        await ctx.message.delete()
         await ctx.send(f"{ctx.author.mention} {random.choice(self.jokes)}")
 
     @commands.command(name="predict", aliases=["fortune", "prophecy"], brief="Случайное предсказание")
     async def tell_prediction(self, ctx):
-        await ctx.message.delete()
         await ctx.send(f"{ctx.author.mention} {random.choice(self.predictions)}")
 
     @commands.command(name="greet", brief="Поприветствовать участника")
     async def greet_user(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await ctx.send(f"Привет {member.mention} от бота базарчик пм")
 
     @commands.command(name="pick", brief="Позвать участника на сервер")
     async def pick_user(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await ctx.send(f"{member.mention} а ну быстро зашол ато банчик")
 
     @commands.command(name="z", brief="Напомнить об украинском языке")
     async def z_user(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await ctx.send(
             f"{member.mention}! Слухай уважно! Настав час остаточно та безповоротно відмовитися від усього, що пахне московією. "
             f"Жодного слова їхньою отруйною мовою, жодного виразу, жодного кальки з того, що тисячоліттями нищило нашу культуру. "
@@ -53,13 +48,11 @@ class FunCog(commands.Cog):
 
     @commands.command(name="random", brief="Случайный «невезучий» игрок дня")
     async def fortune_random(self, ctx):
-        await ctx.message.delete()
         fortune_list = ["Игрок NIKUSA","Игрок REOSTISLAV","Игрок TANCHIK","Игрок STROLEKOFK"]
         await ctx.send(f"🎉 Сегодня удача не на стороне: **{random.choice(fortune_list)}**!")
 
     @commands.command(name="8ball", brief="Магический шар — ответ на любой вопрос")
     async def magic_8ball(self, ctx, *, question: str = None):
-        await ctx.message.delete()
         if not question:
             await ctx.send("❗ `!8ball <вопрос>`", delete_after=5); return
         answers = [
@@ -76,7 +69,6 @@ class FunCog(commands.Cog):
 
     @commands.command(name="rate", brief="Оценить что-либо по шкале 0-100")
     async def rate_something(self, ctx, *, thing: str = None):
-        await ctx.message.delete()
         if not thing:
             await ctx.send("❗ `!rate <что-то>`", delete_after=5); return
         score    = random.randint(0, 100)
@@ -86,13 +78,11 @@ class FunCog(commands.Cog):
 
     @commands.command(name="coinflip", aliases=["cf"], brief="Подбросить монетку (без ставки)")
     async def coinflip(self, ctx):
-        await ctx.message.delete()
         result = random.choice(["🦅 Орёл", "🍀 Решка"])
         await ctx.send(f"🪙 {ctx.author.mention} бросил монетку — **{result}**!")
 
     @commands.command(name="hug", brief="Обнять участника")
     async def hug(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         msgs = [
             f"🤗 {ctx.author.mention} крепко обнимает {member.mention}!",
             f"💛 {ctx.author.mention} тепло обнял {member.mention}!",
@@ -102,17 +92,14 @@ class FunCog(commands.Cog):
 
     @commands.command(name="slap", brief="Дать пощёчину участнику")
     async def slap(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await ctx.send(f"👋 {ctx.author.mention} дал пощёчину {member.mention}!")
 
     @commands.command(name="kiss", brief="Поцеловать участника")
     async def kiss(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await ctx.send(f"💋 {ctx.author.mention} поцеловал {member.mention}!")
 
     @commands.command(name="avatar", brief="Показать аватар участника")
     async def get_avatar(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None: member = ctx.author
         embed = discord.Embed(title=f"🖼️ Аватар {member.display_name}", color=discord.Color.blue())
         embed.set_image(url=member.display_avatar.url)
@@ -121,20 +108,17 @@ class FunCog(commands.Cog):
     @commands.command(name="say", brief="[Админ] Написать от имени бота")
     @commands.has_permissions(administrator=True)
     async def say(self, ctx, *, text: str):
-        await ctx.message.delete()
         await ctx.send(text)
 
     @commands.command(name="embed", brief="[Админ] Отправить красивый embed")
     @commands.has_permissions(administrator=True)
     async def embed_cmd(self, ctx, title: str, *, text: str):
-        await ctx.message.delete()
         embed = discord.Embed(title=title, description=text, color=discord.Color.blurple())
         await ctx.send(embed=embed)
 
     @commands.command(name="announce", brief="[Админ] Сделать объявление с @here")
     @commands.has_permissions(administrator=True)
     async def announce(self, ctx, *, text: str):
-        await ctx.message.delete()
         embed = discord.Embed(title="📢 Объявление", description=text, color=discord.Color.red())
         embed.set_footer(text=f"От {ctx.author.display_name}")
         await ctx.send("@here", embed=embed)

@@ -27,7 +27,6 @@ class GamesCog(commands.Cog):
     # ── Blackjack ─────────────────────────────────────────────
     @commands.command(name="bj", brief="Сыграть в Блэкджек")
     async def blackjack(self, ctx, bet: int):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 
@@ -97,7 +96,6 @@ class GamesCog(commands.Cog):
     # ── Flip ──────────────────────────────────────────────────
     @commands.command(name="flip", brief="Подбросить монетку на ставку")
     async def flip(self, ctx, bet: int, choice: str):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 
@@ -127,7 +125,6 @@ class GamesCog(commands.Cog):
     # ── Slots ─────────────────────────────────────────────────
     @commands.command(name="spin", brief="Сыграть в слоты")
     async def spin(self, ctx, bet: int):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 
@@ -158,7 +155,6 @@ class GamesCog(commands.Cog):
     # ── Dice ──────────────────────────────────────────────────
     @commands.command(name="dice", brief="Угадать число на кубике")
     async def dice_game(self, ctx, bet: int, number: int):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 
@@ -183,7 +179,6 @@ class GamesCog(commands.Cog):
     # ── Roulette ──────────────────────────────────────────────
     @commands.command(name="roulette", brief="Сыграть в рулетку")
     async def roulette(self, ctx, bet: int, choice: str):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
 
@@ -194,19 +189,15 @@ class GamesCog(commands.Cog):
         color  = "green" if number == 0 else ("red" if number in REDS else "black")
         cemj   = {"red":"🔴","black":"⚫","green":"🟢"}[color]
 
-        player_funds[uid] -= bet
-        won = 0
-        ch  = choice.lower()
-
-        if   ch == "red"   and color == "red":   won = bet * 2
-        elif ch == "black" and color == "black": won = bet * 2
-        elif ch == "green" and color == "green": won = bet * 14
-        elif ch.isdigit():
-            if int(ch) == number: won = bet * 35
-        else:
-            player_funds[uid] += bet
-            save_funds()
+        ch = choice.lower()
+        if ch not in ("red", "black", "green") and not (ch.isdigit() and 0 <= int(ch) <= 36):
             await ctx.send("❌ Выбор: red / black / green / число 0-36", delete_after=5); return
+
+        player_funds[uid] -= bet
+        if ch in ("red", "black", "green"):
+            won = (bet * 14 if ch == "green" else bet * 2) if ch == color else 0
+        else:
+            won = bet * 35 if int(ch) == number else 0
 
         player_funds[uid] += won
         save_funds()

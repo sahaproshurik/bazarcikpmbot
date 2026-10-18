@@ -1,11 +1,6 @@
-py-cord[voice]
-git+https://github.com/Pycord-Development/pycord.git
-PyNaCl
-apscheduler
-Pillow
+py-cord[voice]>=2.8.1,<3
 python-dotenv
 pytz
 gtts
 edge-tts
-anthropic
-groq
+groq>=1.0

@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from cogs.help_texts import HELP_TEXTS
 
 
 class MyHelpCommand(commands.HelpCommand):
@@ -80,6 +81,11 @@ class MyHelpCommand(commands.HelpCommand):
                 ("`!gb`",      "Начать смену (пикинг или баление, случайно)"),
                 ("`!priemer`", "Показатель эффективности (влияет на зарплату)"),
             ],
+            "🍔 Работа в McDonald's": [
+                ("`!mc [позиция]`",    "Смена: зал, касса, фри, выдача, сборка, макавто, гриль"),
+                ("`!mcstats [@user]`", "Карьера: звание, рейтинг, ошибки в КЛН, открытые позиции"),
+                ("`!mchelp`",          "Как устроен ресторан и карьерная лестница"),
+            ],
             "📜 Петиции": [
                 ("`!petition текст`",   "Создать петицию"),
                 ("`!vote номер`",       "Подписать петицию"),
@@ -88,17 +94,46 @@ class MyHelpCommand(commands.HelpCommand):
                 ("`!no номер`",         "🔑 Проголосовать «Против» (Admin)"),
             ],
             "🛡️ Модерация": [
-                ("`!mute @user минуты`",     "🔑 Замутить участника"),
-                ("`!unmute @user`",          "🔑 Снять мут"),
-                ("`!ban @user дней`",        "🔑 Забанить на N дней"),
-                ("`!kick @user [причина]`",  "🔑 Кикнуть участника"),
-                ("`!warn @user [причина]`",  "🔑 Выдать предупреждение"),
-                ("`!warns [@user]`",         "Посмотреть варны"),
-                ("`!clearwarn @user`",       "🔑 Сбросить все варны"),
-                ("`!clear N`",               "🔑 Удалить N сообщений"),
-                ("`!clearday N`",            "🔑 Удалить сообщения за N дней"),
-                ("`!clearuser @user N`",     "🔑 Удалить N сообщений участника"),
-                ("`!clearuserday @user N`",  "🔑 Удалить сообщения участника за N дней"),
+                ("`!mute @user [10m|2h|1d] [причина]`", "🔑 Тайм-аут (по умолчанию 10 минут)"),
+                ("`!unmute @user`",                     "🔑 Снять тайм-аут"),
+                ("`!ban @user|ID [7d|perm] [причина]`", "🔑 Бан, временный снимается сам"),
+                ("`!unban ID`",                         "🔑 Разбанить"),
+                ("`!kick @user [причина]`",             "🔑 Кикнуть участника"),
+                ("`!warn @user [причина]`",             "🔑 Варн (3 — тайм-аут 1ч, 5 — 1д, 7 — кик)"),
+                ("`!warns [@user]`",                    "Посмотреть варны"),
+                ("`!delwarn @user N` / `!clearwarn @user`", "🔑 Снять один / все варны"),
+                ("`!clear N [@user|bots|links|files]`", "🔑 Удалить сообщения с фильтром"),
+                ("`!clearday N` / `!clearuser @user N`", "🔑 Удалить за N дней / от участника"),
+                ("`!lock` / `!unlock` / `!slowmode 10s`", "🔑 Закрыть, открыть канал, медленный режим"),
+                ("`!lockdown` / `!unlockdown`",         "🔑 Закрыть весь сервер при рейде"),
+                ("`!case N` / `!history @user`",        "🔑 Журнал наказаний"),
+                ("`!snipe`",                            "🔑 Последнее удалённое сообщение"),
+            ],
+            "⚙️ Настройка сервера": [
+                ("`!setlog #канал`",              "🔑 Логи: удаления, правки, входы, наказания"),
+                ("`!automod [on|off]`",           "🔑 Автомод: флуд, инвайты, капс, упоминания"),
+                ("`!badword add|remove|list`",    "🔑 Запрещённые слова"),
+                ("`!autorole @роль`",             "🔑 Роль для новичков"),
+                ("`!welcome #канал текст`",       "🔑 Приветствие новичков"),
+                ("`!rolemenu Заголовок | @роли`", "🔑 Кнопки самовыдачи ролей"),
+                ("`!nick @user ник` / `!role @user @роль`", "🔑 Ник и роли участника"),
+                ("`!botstatus` / `!backup`",      "🔑 Состояние бота / бэкап данных в ЛС"),
+                ("`!adminhelp`",                  "Шпаргалка по админ-командам"),
+            ],
+            "🤖 ИИ и голос": [
+                ("`!ask вопрос`",      "Спросить ИИ (в войсе ещё и озвучит)"),
+                ("`!aiclear`",         "Очистить память ИИ"),
+                ("`!aivoice [голос]`", "Сменить голос озвучки"),
+                ("`!join` / `!leave`", "Позвать / выгнать бота из войса"),
+            ],
+            "🕵️ Мафия": [
+                ("`!mafia_start`",          "Открыть набор в игру"),
+                ("`!mafia_go`",             "Начать игру"),
+                ("`!kill` / `!heal` / `!check N`", "Ночные действия (в ЛС бота)"),
+                ("`!mafia_vote N`",         "Голосовать днём"),
+                ("`!mafia_end_day`",        "Завершить день"),
+                ("`!mafia_status`",         "Статус игры"),
+                ("`!mafia_stop`",           "Остановить игру"),
             ],
             "👑 Администратор": [
                 ("`!give @user сумма`",    "Выдать деньги участнику"),
@@ -186,8 +221,9 @@ class MyHelpCommand(commands.HelpCommand):
             inline=False
         )
 
-        if command.help:
-            embed.add_field(name="📖 Описание", value=command.help, inline=False)
+        help_text = command.help or HELP_TEXTS.get(command.name)
+        if help_text:
+            embed.add_field(name="📖 Описание", value=help_text[:1024], inline=False)
         else:
             embed.add_field(name="📖 Описание", value="_Подробное описание отсутствует._", inline=False)
 
@@ -199,10 +235,10 @@ class MyHelpCommand(commands.HelpCommand):
             )
 
         for check in command.checks:
-            if "administrator" in str(check):
+            if "has_permissions" in getattr(check, "__qualname__", "") or "is_owner" in getattr(check, "__qualname__", ""):
                 embed.add_field(
                     name="🔑 Права",
-                    value="Только для администраторов сервера",
+                    value="Нужны права модератора/администратора сервера",
                     inline=False
                 )
                 break

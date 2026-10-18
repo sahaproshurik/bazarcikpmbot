@@ -25,6 +25,11 @@ def calculate_tax(profit: int) -> int:
     return int(profit * 0.18) if profit > TAX_THRESHOLD else 0
 
 
+def work_tax(earnings: int) -> int:
+    """Налог с зарплаты (склад, McDonald's): 7% до 47 000, дальше 19%."""
+    return int(earnings * (0.07 if earnings <= 47000 else 0.19))
+
+
 class EconomyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -32,7 +37,6 @@ class EconomyCog(commands.Cog):
     # ── Balance ───────────────────────────────────────────────
     @commands.command(name="money", brief="Проверить баланс")
     async def check_funds(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid  = str(ctx.author.id)
         cash = player_funds.get(uid, 0)
@@ -46,7 +50,6 @@ class EconomyCog(commands.Cog):
 
     @commands.command(name="pay", brief="Перевести деньги другому игроку")
     async def pay(self, ctx, member: discord.Member, amount: int):
-        await ctx.message.delete()
         sender   = str(ctx.author.id)
         receiver = str(member.id)
         if amount <= 0:
@@ -60,7 +63,6 @@ class EconomyCog(commands.Cog):
 
     @commands.command(name="deposit", brief="Положить деньги в банк")
     async def deposit(self, ctx, amount: int):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         if amount <= 0 or player_funds.get(uid, 0) < amount:
@@ -72,7 +74,6 @@ class EconomyCog(commands.Cog):
 
     @commands.command(name="withdraw", brief="Снять деньги из банка")
     async def withdraw(self, ctx, amount: int):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         if amount <= 0 or player_bank.get(uid, 0) < amount:
@@ -85,7 +86,6 @@ class EconomyCog(commands.Cog):
     # ── Leaderboards ──────────────────────────────────────────
     @commands.command(name="top", brief="Топ-10 богатейших игроков")
     async def leaderboard(self, ctx):
-        await ctx.message.delete()
         combined = {}
         for uid in set(list(player_funds.keys()) + list(player_bank.keys())):
             combined[uid] = player_funds.get(uid, 0) + player_bank.get(uid, 0)
@@ -105,7 +105,6 @@ class EconomyCog(commands.Cog):
 
     @commands.command(name="toplevel", brief="Топ-10 игроков по уровню")
     async def top_level(self, ctx):
-        await ctx.message.delete()
         from cogs.xp import get_level
         top    = sorted(player_xp.items(), key=lambda x: x[1], reverse=True)[:10]
         medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
@@ -125,7 +124,6 @@ class EconomyCog(commands.Cog):
     # ── Daily ─────────────────────────────────────────────────
     @commands.command(name="daily", brief="Получить ежедневный бонус")
     async def daily_bonus(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid  = str(ctx.author.id)
         now  = datetime.now(timezone.utc)
@@ -158,7 +156,6 @@ class EconomyCog(commands.Cog):
     # ── Rob ───────────────────────────────────────────────────
     @commands.command(name="rob", brief="Ограбить другого игрока")
     async def rob(self, ctx, member: discord.Member):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         robber = str(ctx.author.id)
         victim = str(member.id)
@@ -201,7 +198,6 @@ class EconomyCog(commands.Cog):
     # ── Crime ─────────────────────────────────────────────────
     @commands.command(name="crime", brief="Совершить преступление (заработок/риск)")
     async def crime(self, ctx):
-        await ctx.message.delete()
         await init_player(self.bot, ctx)
         uid = str(ctx.author.id)
         now = time.time()
@@ -234,7 +230,6 @@ class EconomyCog(commands.Cog):
     @commands.command(name="give", brief="[Админ] Выдать деньги участнику")
     @commands.has_permissions(administrator=True)
     async def give_money(self, ctx, member: discord.Member, amount: int):
-        await ctx.message.delete()
         uid = str(member.id)
         player_funds[uid] = player_funds.get(uid, 0) + amount
         save_funds()
@@ -243,7 +238,6 @@ class EconomyCog(commands.Cog):
     @commands.command(name="take", brief="[Админ] Снять деньги с участника")
     @commands.has_permissions(administrator=True)
     async def take_money(self, ctx, member: discord.Member, amount: int):
-        await ctx.message.delete()
         uid = str(member.id)
         player_funds[uid] = max(0, player_funds.get(uid, 0) - amount)
         save_funds()
@@ -252,7 +246,6 @@ class EconomyCog(commands.Cog):
     @commands.command(name="setmoney", brief="[Админ] Установить баланс участника")
     @commands.has_permissions(administrator=True)
     async def set_money(self, ctx, member: discord.Member, amount: int):
-        await ctx.message.delete()
         uid = str(member.id)
         player_funds[uid] = amount
         save_funds()

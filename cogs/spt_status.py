@@ -26,6 +26,16 @@ from discord.ext import commands, tasks
 
 GIST_ID = os.getenv("SPT_STATUS_GIST_ID", "")
 GIST_FILENAME = os.getenv("SPT_STATUS_GIST_FILENAME", "status.txt")
+
+# Совместимость со старым bot.py: там была raw-ссылка SPT_STATUS_GIST_URL вида
+# https://gist.githubusercontent.com/НИК/ID/raw/[хэш/]status.txt — достаём из неё ID и имя файла.
+_legacy_url = os.getenv("SPT_STATUS_GIST_URL", "")
+if not GIST_ID and _legacy_url:
+    _parts = _legacy_url.split("?")[0].rstrip("/").split("/")
+    if len(_parts) >= 5 and "gist" in _parts[2]:
+        GIST_ID = _parts[4]
+        if "raw" in _parts and _parts[-1] != "raw" and not os.getenv("SPT_STATUS_GIST_FILENAME"):
+            GIST_FILENAME = _parts[-1]
 GITHUB_TOKEN = os.getenv("SPT_STATUS_GITHUB_TOKEN", "")  # опционально, для более частых проверок
 
 # Без токена безопасный минимум — 60 секунд (лимит 60 запросов/час).
@@ -45,7 +55,8 @@ class SPTStatus(commands.Cog):
     @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def check_spt_status(self):
         if not GIST_ID:
-            print("[spt_status] SPT_STATUS_GIST_ID не задан, пропускаю проверку")
+            print("[spt_status] SPT_STATUS_GIST_ID не задан — слежение за SPT-сервером выключено")
+            self.check_spt_status.cancel()
             return
 
         url = f"https://api.github.com/gists/{GIST_ID}"

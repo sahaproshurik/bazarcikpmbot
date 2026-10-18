@@ -1,0 +1,27 @@
+# Секреты
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Временные и аварийные файлы
+*.tmp
+*.corrupt-*
+*.stackdump
+greeting.mp3
+
+# Рабочие данные бота — создаются на хостинге, в git им не место
+player_loans.json
+player_businesses.json
+priemer_data.json
+orders_completed.json
+player_xp.json
+player_inventory.json
+player_daily.json
+player_bank.json
+server_effects.json
+player_warns.json
+mcd_data.json
+guild_config.json
+mod_data.json

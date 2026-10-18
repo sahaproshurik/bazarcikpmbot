@@ -1,6 +1,6 @@
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dtime
 import discord
 from discord.ext import commands, tasks
 from data import (
@@ -55,7 +55,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="buy_business", brief="Купить бизнес")
     async def buy_business(self, ctx, business_name: str, *, custom_name: str):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
 
         if business_name not in business_types:
@@ -87,7 +86,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="sell_business", brief="Продать свой бизнес")
     async def sell_business_cmd(self, ctx, *, business_name: str):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         for b in player_businesses.get(uid, []):
             if b["name"] == business_name:
@@ -101,7 +99,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="upgrade_business", brief="Улучшить бизнес для роста прибыли")
     async def upgrade_business_cmd(self, ctx, *, business_name: str):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         for b in player_businesses.get(uid, []):
             if b["name"] == business_name:
@@ -126,7 +123,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="repair_business", brief="Отремонтировать бизнес")
     async def repair_business_cmd(self, ctx, *, business_name: str):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         for b in player_businesses.get(uid, []):
             if b["name"] == business_name:
@@ -141,7 +137,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="businesses", brief="Список своих бизнесов")
     async def list_businesses(self, ctx, member: discord.Member = None):
-        await ctx.message.delete()
         if member is None: member = ctx.author
         uid   = str(member.id)
         blist = player_businesses.get(uid, [])
@@ -158,7 +153,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="business_info", brief="Информация о типах бизнесов")
     async def business_info_cmd(self, ctx):
-        await ctx.message.delete()
         embed = discord.Embed(title="📋 Типы бизнесов", color=discord.Color.blue())
         for name, d in business_types.items():
             embed.add_field(
@@ -171,13 +165,11 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="use_item", brief="Применить уникальный эффект бизнеса")
     async def use_item_biz_cmd(self, ctx, *, business_type: str):
-        await ctx.message.delete()
         uid = str(ctx.author.id)
         await ctx.send(_apply_biz_unique(uid, business_type))
 
     @commands.command(name="active_effects", brief="Посмотреть активные серверные эффекты")
     async def active_effects_cmd(self, ctx):
-        await ctx.message.delete()
         check_active_effects()
         if not server_effects:
             await ctx.send("❌ Нет активных эффектов.", delete_after=5); return
@@ -189,7 +181,6 @@ class BusinessCog(commands.Cog):
 
     @commands.command(name="business_help", brief="Гайд по системе бизнесов")
     async def business_help_cmd(self, ctx):
-        await ctx.message.delete()
         try:
             with open("business_help.txt", "r", encoding="utf-8") as f:
                 await ctx.send(f.read())
@@ -209,32 +200,31 @@ class BusinessCog(commands.Cog):
             await ctx.send(embed=embed)
 
     # ── Scheduled tasks ───────────────────────────────────────
-    @tasks.loop(hours=1)
+    # Запуск в точное время (UTC): перезапуск бота больше не вызывает двойных выплат и налогов.
+    @tasks.loop(time=dtime(hour=20, tzinfo=timezone.utc))
     async def daily_business_income(self):
-        if datetime.now(timezone.utc).hour == 20:
-            channel = self.bot.get_channel(INCOME_CHANNEL_ID)
-            for uid, biznesy in player_businesses.items():
-                total = sum(b["profit"] for b in biznesy)
-                if total > 0:
-                    player_funds[uid] = player_funds.get(uid, 0) + total
-                    if channel:
-                        try: await channel.send(f"💼 <@{uid}> получил прибыль от бизнесов: **{total:,}** 💰")
-                        except Exception: pass
-            save_funds()
+        channel = self.bot.get_channel(INCOME_CHANNEL_ID)
+        for uid, biznesy in player_businesses.items():
+            total = sum(b["profit"] for b in biznesy)
+            if total > 0:
+                player_funds[uid] = player_funds.get(uid, 0) + total
+                if channel:
+                    try: await channel.send(f"💼 <@{uid}> получил прибыль от бизнесов: **{total:,}** 💰")
+                    except Exception: pass
+        save_funds()
 
-    @tasks.loop(hours=1)
+    @tasks.loop(time=dtime(hour=19, tzinfo=timezone.utc))
     async def tax_deduction_task(self):
-        if datetime.now(timezone.utc).hour == 19:
-            for uid, biznesy in player_businesses.items():
-                total_tax = sum(b["taxes"] for b in biznesy)
-                if total_tax > 0:
-                    player_funds[uid] = max(0, player_funds.get(uid, 0) - total_tax)
-            save_funds()
+        for uid, biznesy in player_businesses.items():
+            total_tax = sum(b["taxes"] for b in biznesy)
+            if total_tax > 0:
+                player_funds[uid] = max(0, player_funds.get(uid, 0) - total_tax)
+        save_funds()
 
-    @tasks.loop(hours=1)
+    @tasks.loop(time=dtime(hour=23, tzinfo=timezone.utc))
     async def weekend_competition(self):
         now = datetime.now(timezone.utc)
-        if now.weekday() == 6 and now.hour == 23:
+        if now.weekday() == 6:
             earnings = {uid: sum(b["profit"] for b in blist) for uid, blist in player_businesses.items()}
             top3     = sorted(earnings.items(), key=lambda x: x[1], reverse=True)[:3]
             rewards  = [{"money":500,"upgrades":3},{"money":200,"upgrades":1},{"money":100,"upgrades":0}]
@@ -254,6 +244,12 @@ class BusinessCog(commands.Cog):
             if channel:
                 try: await channel.send("\n".join(lines))
                 except Exception: pass
+
+    @daily_business_income.before_loop
+    @tax_deduction_task.before_loop
+    @weekend_competition.before_loop
+    async def _wait_ready(self):
+        await self.bot.wait_until_ready()
 
 
 def setup(bot):
