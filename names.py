@@ -214,7 +214,14 @@ def name_score(query: str, member) -> float:
 def find_member(guild, query, author, voice_members=()):
     """Участник по имени — как его написали или расслышал Whisper; сначала — те, кто в войсе.
     LookupError — никого похожего, ValueError — несколько похожих (в тексте — их имена)."""
-    raw = str(query or "").strip().lstrip("@")
+    raw = str(query or "").strip()
+    if found := re.fullmatch(r"<@!?(\d{15,21})>|(\d{15,21})", raw):   # упоминание из чата или ID — без угадывания
+        uid = int(found.group(1) or found.group(2))
+        member = next((m for m in voice_members if m.id == uid), None) or guild.get_member(uid)
+        if member is None:
+            raise LookupError(raw)
+        return member
+    raw = raw.lstrip("@")
     if raw.lower() in SELF_WORDS:
         return author
     q = norm_name(raw)

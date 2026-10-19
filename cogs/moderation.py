@@ -262,20 +262,19 @@ class ModerationCog(commands.Cog):
         key = getattr(ctx.channel, "id", None)
         if key in self.clearing:
             return await self.deny(ctx, "В этом канале уже идёт очистка — дождись, пока она закончится.")
-        left = spec.limit
-
-        def check(m):
-            nonlocal left
-            if left <= 0 or not spec.match(m):
-                return False
-            left -= 1
-            return True
         scan = CLEAR_SCAN if spec.filtered else min(CLEAR_SCAN, spec.limit + 100)   # +запас на закреплённые
         self.clearing.add(key)
         started = time.monotonic()
+        deleted = []
         try:
-            deleted = await ctx.channel.purge(limit=scan, check=check, after=spec.after, before=spec.before,
-                                              oldest_first=False, reason=f"{ctx.author}: !clear")
+            # не purge: он листает все scan сообщений, даже когда нужные уже набрались; after — не старше 14 дней
+            async for m in ctx.channel.history(limit=scan, after=spec.after, before=spec.before, oldest_first=False):
+                if spec.match(m):
+                    deleted.append(m)
+                    if len(deleted) >= spec.limit:
+                        break
+            for i in range(0, len(deleted), 100):
+                await ctx.channel.delete_messages(deleted[i:i + 100], reason=f"{ctx.author}: !clear")
         finally:
             self.clearing.discard(key)
         what = spec.describe(ctx.guild)

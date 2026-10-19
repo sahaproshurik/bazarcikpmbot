@@ -59,9 +59,10 @@ PHRASES = {
     "cancelled":   {"ru": "Отменил.", "uk": "Скасував.", "sk": "Zrušené.", "en": "Cancelled."},
     "no_rights":   {"ru": "У тебя нет прав на эту команду.", "uk": "У тебе немає прав на цю команду.",
                     "sk": "Na tento príkaz nemáš práva.", "en": "You don't have permission for that."},
-    "forbidden":   {"ru": "Эту команду голосом не выполняю, только текстом.",
-                    "uk": "Цю команду голосом не виконую, тільки текстом.",
-                    "sk": "Tento príkaz hlasom nespustím, iba textom.", "en": "I don't run that command by voice."},
+    "forbidden":   {"ru": "Это по просьбе не выполняю — только обычной командой с «!».",
+                    "uk": "Це на прохання не виконую — тільки звичайною командою з «!».",
+                    "sk": "Toto na požiadanie nespravím — iba bežným príkazom s „!“.",
+                    "en": "I don't do that on request — only as a regular “!” command."},
     "unsupported": {"ru": "Такого я пока не умею. Что могу голосом, смотри в !jarvis.",
                     "uk": "Такого я поки не вмію. Що можу голосом, дивись у !jarvis.",
                     "sk": "To zatiaľ neviem. Čo viem hlasom, nájdeš v !jarvis.",
@@ -394,7 +395,8 @@ PARSE_PROMPT = (
     "lang — язык фразы.\n"
     "args — только параметры выбранного действия; параметр, которого нет во фразе, не добавляй:\n"
     "member — имя участника; если похоже на кого-то из списка участников или на прозвище из списка прозвищ, "
-    "напиши основное имя участника точно как в списке; сам говорящий — \"me\".\n"
+    "напиши основное имя участника точно как в списке; сам говорящий — \"me\"; упомянут в чате как <@число> — "
+    "верни это упоминание как есть.\n"
     "alias — прозвище ровно как его назвали, в именительном падеже («Петруху» → \"Петруха\").\n"
     "amount — целое число (тысяча = 1000, «пять кусков» = 5000). bet — целое число, \"all\" (ва-банк) "
     "или \"half\" (половина).\n"
@@ -850,7 +852,7 @@ class JarvisCog(commands.Cog):
             print(f"[jarvis] {user.display_name}: {intent.action} не выполнено — {why}")
             await self.tell(channel, user, question, vc, source, text)
         if intent.action == "forbidden" or intent.action in VOICE_FORBIDDEN:
-            return await refuse("голосом запрещено", tr("forbidden", lang))
+            return await refuse("по просьбе запрещено", tr("forbidden", lang))
         action = ACTIONS_BY_KEY.get(intent.action)
         command = self.command_for(action, channel.guild)
         if command is None:

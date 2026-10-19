@@ -691,7 +691,7 @@ class HandView(View):
             self._btn("Беру", "✋", RED, self._take)
         if "pass" in kinds:
             self._btn("Бито / Пас", "✅", GREEN, self._pass)
-        self._btn("Обновить", "🔄", GREY, self._refresh)
+        self._btn("Обновить", "🔄", GREY, self._show)
 
     def _btn(self, label, emoji, style, cb):
         b = Button(label=label, emoji=emoji, style=style, row=1)
@@ -725,10 +725,10 @@ class HandView(View):
             await interaction.response.edit_message(embed=embed, view=view)
             m.panels[self.uid] = [interaction, sig, time.monotonic()]
             return
-        await self._refresh(interaction)
+        await self._show(interaction)
         await m.refresh(skip=self.uid)
 
-    async def _refresh(self, interaction):
+    async def _show(self, interaction):
         m = self.match
         if m.done:
             await interaction.response.edit_message(content="Партия окончена.", embed=None, view=None)

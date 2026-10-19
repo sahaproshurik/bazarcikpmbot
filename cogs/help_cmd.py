@@ -194,8 +194,17 @@ class MyHelpCommand(commands.HelpCommand):
             else:
                 emb = discord.Embed(color=discord.Color.blurple())
 
-            lines = "\n".join(f"{cmd} — {desc}" for cmd, desc in commands_list)
-            emb.add_field(name=section_name, value=lines, inline=False)
+            # в поле embed не больше 1024 символов — длинный раздел делим на несколько полей
+            chunks, chunk = [], ""
+            for cmd, desc in commands_list:
+                line = f"{cmd} — {desc}"
+                if chunk and len(chunk) + 1 + len(line) > 1024:
+                    chunks.append(chunk)
+                    chunk = ""
+                chunk = f"{chunk}\n{line}" if chunk else line
+            chunks.append(chunk)
+            for i, value in enumerate(chunks):
+                emb.add_field(name=section_name if i == 0 else "​", value=value, inline=False)
             embeds.append(emb)
 
         embeds[-1].set_footer(text="Используй !help <команда> для подробной информации по любой команде")
