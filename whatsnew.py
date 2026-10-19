@@ -87,15 +87,30 @@ def pick_new(items: list, seen: Optional[str]) -> list:
     return [it for it in items if it["time"] is not None and newest - it["time"] <= NIGHT_SEC][:MAX_ITEMS]
 
 
+def source_note(new: list, items: list) -> str:
+    """Откуда прочитано — для подписи ответа: история git (какие коммиты) или CHANGES.md (какие разделы)."""
+    if not items:
+        return "Не нашёл ни истории git, ни CHANGES.md — рассказывать не из чего"
+    shown = new or items[:1]
+    if not items[0]["id"].startswith("changes:"):
+        first, last = shown[-1]["id"][:7], shown[0]["id"][:7]
+        span = first if first == last else f"{first}…{last}"
+        return f"📜 Прочитал из истории git: {'коммит' if first == last else 'коммиты'} {span}"
+    nums = [it["id"].split(":")[1] for it in shown]
+    span = nums[0] if len(nums) == 1 else f"{nums[-1]}–{nums[0]}"
+    return f"📄 Прочитал из CHANGES.md, {'раздел' if len(nums) == 1 else 'разделы'} {span} (git на сервере недоступен)"
+
+
 def embed_for(new: list, items: list) -> discord.Embed:
     if not new:
         e = discord.Embed(title=f"😴 {NOTHING}", color=discord.Color.light_grey())
         if items:
             e.description = f"Последнее, что добавили: **{items[0]['title']}**"
-        return e
-    e = discord.Embed(title=f"🍻 {INTRO}:", color=COLOR)
-    for it in new:
-        e.add_field(name=f"• {it['title']}"[:256], value=(it["text"] or "—")[:1024], inline=False)
+    else:
+        e = discord.Embed(title=f"🍻 {INTRO}:", color=COLOR)
+        for it in new:
+            e.add_field(name=f"• {it['title']}"[:256], value=(it["text"] or "—")[:1024], inline=False)
+    e.set_footer(text=source_note(new, items))
     return e
 
 
