@@ -3,11 +3,13 @@ moderation.py — модерация: нативные тайм-ауты Discord
 варны с автоэскалацией, очистка сообщений с фильтрами, блокировка каналов и локдаун сервера.
 Каждое действие получает номер кейса и уходит в лог-канал (см. !setlog).
 """
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Union
 import discord
 from discord.ext import commands, tasks
 from data import player_warns, save_warns, mod_data, save_mod
+from purge_filters import ClearSpec, parse_clear, SCAN as CLEAR_SCAN
 from utils import parse_duration, fmt_duration, utcnow, log_action
 
 MAX_TIMEOUT = timedelta(days=28)   # лимит Discord на тайм-аут
@@ -19,7 +21,6 @@ WARN_ESCALATION = {
     5: ("mute", timedelta(days=1)),
     7: ("kick", None),
 }
-LINK_MARKERS = ("http://", "https://", "discord.gg/")
 
 
 def hierarchy_error(ctx, member: discord.Member):
@@ -55,6 +56,7 @@ def split_duration(duration: Optional[str], reason: str, default_unit: str):
 class ModerationCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.clearing: set = set()        # каналы, где сейчас идёт !clear — вторую очистку не запускаем
         self.tempban_watcher.start()
 
     def cog_unload(self):
@@ -254,62 +256,76 @@ class ModerationCog(commands.Cog):
         await ctx.send(f"✅ Все предупреждения {member.mention} сброшены.")
 
     # ── Очистка сообщений ─────────────────────────────────────
-    @commands.command(
-        name="clear", aliases=["purge"], brief="[Мод] Удалить сообщения в канале",
-        help="`!clear N [фильтр]` — среди последних N (1–500) удалить: всё, `@user`, `bots`, `links`, `files`.")
-    @commands.has_permissions(manage_messages=True)
-    async def clear_messages(self, ctx, amount: int, *, what: str = ""):
-        if not 1 <= amount <= 500:
-            return await self.deny(ctx, "Количество от 1 до 500.")
-        what = what.lower().strip()
-        if ctx.message.mentions:
-            target = ctx.message.mentions[0]
-            check, label = (lambda m: m.author == target), f" от {target.mention}"
-        elif what in ("bots", "боты"):
-            check, label = (lambda m: m.author.bot), " ботов"
-        elif what in ("links", "ссылки"):
-            check, label = (lambda m: any(x in m.content for x in LINK_MARKERS)), " со ссылками"
-        elif what in ("files", "images", "файлы", "картинки"):
-            check, label = (lambda m: bool(m.attachments)), " с файлами"
-        elif what:
-            return await self.deny(ctx, "Фильтр: `@user`, `bots`, `links` или `files`.")
-        else:
-            check, label = (lambda m: True), ""
-        deleted = await ctx.channel.purge(limit=amount, check=check)
-        await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений{label}.", delete_after=4)
+    async def purge(self, ctx, spec: ClearSpec):
+        """Удаляет по фильтрам (purge_filters.py). Одна очистка на канал, лимиты — там же."""
+        key = getattr(ctx.channel, "id", None)
+        if key in self.clearing:
+            return await self.deny(ctx, "В этом канале уже идёт очистка — дождись, пока она закончится.")
+        left = spec.limit
 
-    @commands.command(name="clearday", brief="[Мод] Удалить сообщения за N дней")
+        def check(m):
+            nonlocal left
+            if left <= 0 or not spec.match(m):
+                return False
+            left -= 1
+            return True
+        scan = CLEAR_SCAN if spec.filtered else min(CLEAR_SCAN, spec.limit + 100)   # +запас на закреплённые
+        self.clearing.add(key)
+        started = time.monotonic()
+        try:
+            deleted = await ctx.channel.purge(limit=scan, check=check, after=spec.after, before=spec.before,
+                                              oldest_first=False, reason=f"{ctx.author}: !clear")
+        finally:
+            self.clearing.discard(key)
+        what = spec.describe(ctx.guild)
+        print(f"[clear] {ctx.author}: удалено {len(deleted)} ({what}), просмотрено до {scan}, "
+              f"{time.monotonic() - started:.1f} с")
+        if not deleted:
+            return await ctx.send(f"🔎 Ничего не нашлось: {what} (смотрел до {scan} последних сообщений "
+                                  "моложе 14 дней, закреплённые не трогаю).", delete_after=12)
+        await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщ.: {what}.", delete_after=8)
+
+    async def purge_query(self, ctx, query: str):
+        try:
+            spec = parse_clear(query)
+        except ValueError as e:
+            return await self.deny(ctx, f"{e}.")
+        await self.purge(ctx, spec)
+
+    @commands.command(
+        name="clear", aliases=["purge"], brief="[Мод] Удалить сообщения: сколько, чьи, за какое время",
+        help="`!clear [N] [фильтры]` — фильтры можно сочетать:\n"
+             "• число — сколько удалить (1–500); без числа — до 500 подходящих\n"
+             "• `@user` (можно нескольких) или ID — только их сообщения\n"
+             "• `за 2ч` / `за 30m` / `за сегодня` / `за вчера` — за период\n"
+             "• `после 18.10 12:00` / `до 20:00` / `до вчера` — с какого или до какого момента\n"
+             "• `bots`, `humans`, `links`, `files` — от ботов, от людей, со ссылками, с файлами\n"
+             "• `\"текст\"` — в сообщении есть этот текст\n"
+             "Примеры: `!clear 50`, `!clear @Петя за 2ч`, `!clear до 18.10 20:00 bots`, `!clear за сегодня \"казино\"`.\n"
+             "Ограничения: до 500 удалений и до 2000 просмотренных сообщений за раз, только моложе 14 дней "
+             "(старше Discord пачкой не удаляет), закреплённые не трогаются. Время — по Братиславе.")
+    @commands.has_permissions(manage_messages=True)
+    async def clear_messages(self, ctx, *, query: str = ""):
+        await self.purge_query(ctx, query)
+
+    @commands.command(name="clearday", brief="[Мод] Удалить сообщения за N дней (то же, что !clear за Nd)")
     @commands.has_permissions(manage_messages=True)
     async def clearday(self, ctx, days: int):
         if not 1 <= days <= 14:
             return await self.deny(ctx, "Дней от 1 до 14.")
-        deleted = await ctx.channel.purge(limit=None, after=utcnow() - timedelta(days=days))
-        await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений за {days} дн.", delete_after=4)
+        await self.purge_query(ctx, f"за {days}d")
 
-    @commands.command(name="clearuser", brief="[Мод] Удалить N последних сообщений участника")
+    @commands.command(name="clearuser", brief="[Мод] Удалить N последних сообщений участника (!clear @user N)")
     @commands.has_permissions(manage_messages=True)
     async def clearuser(self, ctx, member: discord.Member, amount: int):
-        if not 1 <= amount <= 500:
-            return await self.deny(ctx, "Количество от 1 до 500.")
-        left = amount
+        await self.purge_query(ctx, f"<@{member.id}> {amount}")
 
-        def check(m):
-            nonlocal left
-            if m.author == member and left > 0:
-                left -= 1
-                return True
-            return False
-        deleted = await ctx.channel.purge(limit=2000, check=check)
-        await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений от {member.mention}.", delete_after=5)
-
-    @commands.command(name="clearuserday", brief="[Мод] Удалить сообщения участника за N дней")
+    @commands.command(name="clearuserday", brief="[Мод] Удалить сообщения участника за N дней (!clear @user за Nd)")
     @commands.has_permissions(manage_messages=True)
     async def clearuserdays(self, ctx, member: discord.Member, days: int):
         if not 1 <= days <= 14:
             return await self.deny(ctx, "Дней от 1 до 14.")
-        deleted = await ctx.channel.purge(limit=2000, after=utcnow() - timedelta(days=days),
-                                          check=lambda m: m.author == member)
-        await ctx.send(f"🗑️ Удалено **{len(deleted)}** сообщений от {member.mention} за {days} дн.", delete_after=5)
+        await self.purge_query(ctx, f"<@{member.id}> за {days}d")
 
     # ── Каналы ────────────────────────────────────────────────
     async def _set_send(self, channel: discord.TextChannel, allow: Optional[bool], reason: str):

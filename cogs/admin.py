@@ -418,7 +418,7 @@ class AdminCog(commands.Cog):
             "`!warns [@u]` • `!delwarn @u N` • `!clearwarn @u`\n"
             "`!case N` • `!history @u` — журнал наказаний"))
         e.add_field(name="Каналы и сообщения", inline=False, value=(
-            "`!clear N [@u|bots|links|files]` • `!clearday N` • `!clearuser @u N`\n"
+            "`!clear [N] [@u] [за 2ч] [до/после 18.10 20:00] [bots|links|files] [\"текст\"]` — фильтры сочетаются\n"
             "`!lock [#канал]` • `!unlock` • `!slowmode 10s|off`\n"
             "`!lockdown` / `!unlockdown` — закрыть/открыть весь сервер при рейде\n"
             "`!snipe` — последнее удалённое сообщение"))

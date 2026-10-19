@@ -77,6 +77,8 @@ PHRASES = {
                     "sk": "Zapnúť pomalý režim v chate, raz za {d}", "en": "Turn on slow mode, one message every {d}"},
     "slow_off":    {"ru": "Выключить медленный режим в чате", "uk": "Вимкнути повільний режим у чаті",
                     "sk": "Vypnúť pomalý režim v chate", "en": "Turn off slow mode"},
+    "bad_filter":  {"ru": "Не понял фильтр: {why}.", "uk": "Не зрозумів фільтр: {why}.",
+                    "sk": "Nerozumiem filtru: {why}.", "en": "I didn't get the filter: {why}."},
 }
 # что именно не расслышали — по типу параметра
 MISSING_WHAT = {
@@ -153,6 +155,25 @@ class Action:
     confirm: object = False             # True или функция (ctx, значения) → нужно ли подтверждение
     ask: dict = field(default_factory=dict)   # вопрос-подтверждение по языкам
     hierarchy: bool = False             # заранее проверить иерархию ролей (как в moderation)
+    build: object = None                # (значения, сервер) → (args, kwargs, описание) — свой вызов команды
+
+
+def clear_call(values: dict, guild):
+    """Фильтры очистки от ИИ → строка для !clear. Проверяем её тем же разбором, что и команда:
+    непонятный фильтр всплывёт до подтверждения, а не после."""
+    from purge_filters import parse_clear
+    parts = [str(values["amount"])] if values.get("amount") else []
+    if values.get("member") is not None:
+        parts.append(f"<@{values['member'].id}>")
+    for key, word in (("period", "за"), ("after", "после"), ("before", "до")):
+        if values.get(key):
+            parts.append(f"{word} " + re.sub(rf"^(?:{word}|с|since|after|before|last)\s+", "", values[key], flags=re.I))
+    if values.get("kind"):
+        parts.append(values["kind"])
+    if values.get("contains"):
+        parts.append('"' + values["contains"].replace('"', "'") + '"')
+    query = " ".join(parts)
+    return [], {"query": query}, parse_clear(query).describe(guild)
 
 
 def big_bet(ctx, values) -> bool:
@@ -258,9 +279,16 @@ ACTIONS = [
            (P("member", "member"), P("duration", "duration", required=False), REASON), confirm=True, hierarchy=True,
            ask={"ru": "Забанить {member} {duration}", "uk": "Забанити {member} {duration}",
                 "sk": "Zabanovať {member} {duration}", "en": "Ban {member} {duration}"}),
-    Action("clear", "clear", "удалить последние сообщения в чате", "удали десять последних сообщений", MOD,
-           (P("amount", "amount"),), confirm=True,
-           ask={"ru": "Удалить {amount}", "uk": "Видалити {amount}", "sk": "Vymazať {amount}", "en": "Delete {amount}"}),
+    Action("clear", "clear", "удалить сообщения в этом чате; фильтры можно сочетать: amount — сколько (до 500), "
+           "member — чьи, period — за какой срок (2h, 30m, 1d, сегодня, вчера), after / before — с какого / до какого "
+           "момента (18.10 20:00, 12:00, вчера), kind — bots, humans, links или files, contains — текст в сообщении",
+           "удали сообщения Пети за последний час", MOD,
+           (P("amount", "amount", required=False), MEMBER_OPT, P("period", "raw", required=False),
+            P("after", "raw", required=False), P("before", "raw", required=False),
+            P("kind", "choice", required=False, choices=("bots", "humans", "links", "files")),
+            P("contains", "text", required=False)), confirm=True, build=lambda values, guild: clear_call(values, guild),
+           ask={"ru": "Удалить сообщения: {filters}", "uk": "Видалити повідомлення: {filters}",
+                "sk": "Vymazať správy: {filters}", "en": "Delete messages: {filters}"}),
     Action("slowmode", "slowmode", "медленный режим чата, delay: срок или off", "включи медленный режим 30 секунд", MOD,
            (P("delay", "delay"),), confirm=True, ask={lang: "{delay}" for lang in LANGS}),
     Action("lock", "lock", "закрыть этот чат для сообщений", "закрой чат", MOD, (REASON,), confirm=True,
@@ -811,12 +839,20 @@ class JarvisCog(commands.Cog):
                 values[p.name] = spoken[p.name] = text.lower()
             else:
                 values[p.name] = spoken[p.name] = text[:200]
+        if action.build is not None:                # своя сборка вызова — и её проверка до подтверждения
+            try:
+                values["_call"] = action.build(values, ctx.guild)
+            except ValueError as e:
+                raise NotUnderstood(tr("bad_filter", lang, why=e))
+            spoken["filters"] = values["_call"][2]
         values["_spoken"] = spoken
         return values
 
     @staticmethod
     def call_args(action: Action, values: dict):
         """Значения → аргументы настоящей команды — в том же виде, что набрал бы человек."""
+        if "_call" in values:
+            return values["_call"][0], values["_call"][1]
         args, kwargs = [], {}
         for p in action.params:
             v = values.get(p.name)
