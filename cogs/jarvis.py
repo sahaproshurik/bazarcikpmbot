@@ -364,6 +364,13 @@ def _catalog() -> str:
     return "\n".join(lines)
 
 
+# Реакция, когда о боте говорят, а не ему: разбор выбирает её по тону фразы — только из этого набора
+ASIDE_EMOJI = "👀"                  # нейтральная и запасная
+VARIATION = chr(0xFE0F)              # невидимый «вариант эмодзи»: ИИ то ставит его, то нет
+ASIDE_TONES = {"😎": "хвалят бота, хвастаются им", "🙄": "жалуются на бота, ругают", "😂": "смешно, подкалывают",
+               "🫡": "благодарят, уважают", "❤️": "любят, нравится", "🤖": "обсуждают, что бот умеет и как работает",
+               "👀": "удивляются или нейтрально"}
+
 PARSE_PROMPT = (
     "Ты — модуль разбора команд Discord-бота BazarčikPM. Тебе дают фразу, сказанную боту в войсе или "
     "написанную ему в чате (обращение «Базарчик» или @упоминание уже убрано), на русском, украинском, словацком "
@@ -378,6 +385,8 @@ PARSE_PROMPT = (
     "нему, а говорят о нём другим, в третьем лице — «вот наш @бот теперь такое умеет прикиньте», «смотрите, что "
     "@бот сделал», «@бот опять тупит ахах». Прямое обращение — вопрос, просьба или реплика самому боту («@бот, ты "
     "как?», «@бот скажи…», «спасибо, @бот», «ты лучший, @бот») — это chat или действие. Сомневаешься — chat.\n"
+    "Для aside в args — emoji: одна реакция под тон фразы, только из списка: "
+    + "; ".join(f"{e} — {why}" for e, why in ASIDE_TONES.items()) + ".\n"
     "forbidden — просят то, что голосом нельзя: перезагрузить модули, бэкап, статус бота, выдать или забрать "
     "деньги как админ, объявления, настройки сервера.\n"
     "unsupported — явно просят бота что-то сделать на сервере, но такого действия нет в списке.\n"
@@ -414,13 +423,13 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
-ASIDE_EMOJI = "👀"
-ASIDE_MODES = {"react":  ("👀 реакция", "бот ставит 👀 и не отвечает."),
+ASIDE_MODES = {"react":  ("👀 реакция", "бот ставит реакцию и не отвечает."),
                "ignore": ("🙈 игнор", "бот молчит — ни ответа, ни реакции."),
                "answer": ("💬 ответ", "бот отвечает, как на любое обращение.")}
 ASIDE_WORDS = {"react":  ("реакция", "реакцию", "react", "reaction", "👀", "вкл", "on"),
                "ignore": ("игнор", "игнорировать", "ignore", "молчать", "тихо", "silent"),
                "answer": ("ответ", "отвечать", "answer", "reply", "выкл", "off")}
+AUTO_WORDS = {"авто", "auto", "смысл", "по смыслу", "сброс", "reset"}
 
 
 def aside_mode(guild_id) -> str:
@@ -433,6 +442,31 @@ def aside_mode(guild_id) -> str:
 def set_aside_mode(guild_id, mode: str):
     guild_config.setdefault(str(guild_id), {})["mention_aside"] = mode
     save_guild_cfg()
+
+
+def aside_emoji(guild_id):
+    """Своя реакция сервера (!упоминания реакция 🔥) или None — тогда реакция по смыслу фразы."""
+    emoji = guild_config.get(str(guild_id), {}).get("mention_emoji")
+    return emoji if isinstance(emoji, str) and emoji else None
+
+
+def set_aside_emoji(guild_id, emoji):
+    cfg = guild_config.setdefault(str(guild_id), {})
+    if emoji:
+        cfg["mention_emoji"] = emoji
+    else:
+        cfg.pop("mention_emoji", None)
+    save_guild_cfg()
+
+
+def pick_emoji(guild_id, args: dict) -> str:
+    """Своя реакция сервера, иначе та, что разбор выбрал по тону (только из ASIDE_TONES), иначе 👀."""
+    custom = aside_emoji(guild_id)
+    if custom:
+        return custom
+    plain = lambda e: e.replace(VARIATION, "")         # «❤️» и «❤» — одно и то же
+    chosen = plain(str((args or {}).get("emoji") or "")).strip()
+    return next((e for e in ASIDE_TONES if plain(e) == chosen), ASIDE_EMOJI)
 
 
 def args_note(args: dict) -> str:
@@ -760,9 +794,10 @@ class JarvisCog(commands.Cog):
                 print(f"[jarvis] {user.display_name} → говорят о боте, не ему — молчу (!упоминания игнор), "
                       f"разбор {took:.1f} с")
                 return True
-            if mode == "react" and await self.react(message):
-                print(f"[jarvis] {user.display_name} → говорят о боте, не ему — реакция {ASIDE_EMOJI}, "
-                      f"разбор {took:.1f} с")
+            emoji = pick_emoji(channel.guild.id, intent.args)
+            if mode == "react" and await self.react(message, emoji):
+                print(f"[jarvis] {user.display_name} → говорят о боте, не ему — реакция {emoji}"
+                      f"{' (своя сервера)' if aside_emoji(channel.guild.id) else ''}, разбор {took:.1f} с")
                 return True
             intent.action = "chat"                 # «ответ» или реакция не встала — отвечаем как обычно
         if intent.action == "chat":
@@ -1219,9 +1254,9 @@ class JarvisCog(commands.Cog):
                     text = text.replace(f"<@&{role.id}>", "@бот")
         return " ".join(text.split())
 
-    async def react(self, message) -> bool:
+    async def react(self, message, emoji: str = ASIDE_EMOJI) -> bool:
         try:
-            await message.add_reaction(ASIDE_EMOJI)
+            await message.add_reaction(emoji)
             return True
         except discord.HTTPException as e:         # нет права ставить реакции — ответим словами
             print(f"[jarvis] Реакция не поставилась ({e}) — отвечаю как обычно")
@@ -1274,7 +1309,10 @@ class JarvisCog(commands.Cog):
     # ── !jarvis ───────────────────────────────────────────────
     @commands.command(name="mentions", aliases=["упоминания"], brief="Как бот реагирует, когда о нём говорят, а не ему",
                       help="Бота упомянули в третьем лице («вот наш @бот теперь такое умеет»). Что делает бот:\n"
-                           "`!упоминания реакция` — ставит 👀 и не отвечает (по умолчанию);\n"
+                           "`!упоминания реакция` — ставит реакцию по смыслу (😎 🙄 😂 🫡 ❤️ 🤖 👀) и не отвечает "
+                           "(по умолчанию);\n"
+                           "`!упоминания реакция 🔥` — всегда свою (можно эмодзи сервера), `!упоминания реакция авто` "
+                           "— снова по смыслу;\n"
                            "`!упоминания игнор` — молчит совсем;\n"
                            "`!упоминания ответ` — отвечает, как на любое обращение.\n"
                            "`!упоминания` — что сейчас. Менять — администраторам. Прямые вопросы и просьбы к боту "
@@ -1283,22 +1321,43 @@ class JarvisCog(commands.Cog):
     async def mentions(self, ctx, *, state: str = None):
         from cogs.aliases import is_admin
         if state is not None:
-            mode = next((m for m, words in ASIDE_WORDS.items() if state.strip().lower() in words), None)
-            if mode is None:
-                return await ctx.send("❌ Варианты: `!упоминания реакция`, `!упоминания игнор`, `!упоминания ответ`.",
+            word, _, extra = state.strip().partition(" ")
+            mode = next((m for m, words in ASIDE_WORDS.items() if word.lower() in words), None)
+            extra = extra.strip()
+            if mode is None or (extra and mode != "react"):
+                return await ctx.send("❌ Варианты: `!упоминания реакция`, `!упоминания реакция 🔥`, "
+                                      "`!упоминания реакция авто`, `!упоминания игнор`, `!упоминания ответ`.",
                                       delete_after=10)
             if not is_admin(ctx.author, ctx.channel):
                 return await ctx.send("❌ Менять это могут только администраторы.", delete_after=10)
+            if extra.lower() in AUTO_WORDS:
+                set_aside_emoji(ctx.guild.id, None)
+            elif extra:
+                if " " in extra or len(extra) > 64:
+                    return await ctx.send("❌ Реакция — одно эмодзи: `!упоминания реакция 🔥`.", delete_after=10)
+                try:                               # проверяем сразу: эту реакцию бот должен уметь поставить
+                    await ctx.message.add_reaction(extra)
+                except discord.HTTPException:
+                    return await ctx.send(f"❌ Не могу поставить реакцию «{extra}» — это не эмодзи или эмодзи "
+                                          "с чужого сервера.", delete_after=10)
+                set_aside_emoji(ctx.guild.id, extra)
             set_aside_mode(ctx.guild.id, mode)
-            print(f"[jarvis] {ctx.author.display_name}: упоминания в третьем лице → {mode}")
+            print(f"[jarvis] {ctx.author.display_name}: упоминания в третьем лице → {mode}"
+                  + (f", реакция {aside_emoji(ctx.guild.id) or 'по смыслу'}" if mode == "react" else ""))
         mode = aside_mode(ctx.guild.id)
         title, about = ASIDE_MODES[mode]
+        custom = aside_emoji(ctx.guild.id)
+        if mode == "react":
+            about = (f"бот ставит {custom} и не отвечает." if custom else
+                     f"бот ставит реакцию по смыслу ({' '.join(ASIDE_TONES)}) и не отвечает.")
         e = discord.Embed(title=f"Упоминания в третьем лице: {title}", color=discord.Color.teal(), description=(
             f"Бота упомянули, но говорят о нём, а не ему («вот наш @бот теперь такое умеет»): {about}\n"
             "Прямые вопросы и просьбы к боту — как обычно.\n\n"
-            + "\n".join(f"`!упоминания {words[0]}` — {t}" for (m, words), (t, _) in
-                         zip(ASIDE_WORDS.items(), ASIDE_MODES.values()))
-            + "\nМенять — администраторам."))
+            "`!упоминания реакция` — реакция и без ответа; `!упоминания реакция 🔥` — всегда своя, "
+            "`!упоминания реакция авто` — по смыслу\n"
+            "`!упоминания игнор` — молчать совсем\n"
+            "`!упоминания ответ` — отвечать, как на любое обращение\n"
+            "Менять — администраторам."))
         await ctx.send(embed=e)
 
     @commands.command(name="jarvis", aliases=["джарвис"], brief="Что бот умеет по просьбе: голосом или через @")
