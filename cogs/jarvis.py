@@ -29,6 +29,7 @@ from discord.ext import commands
 from discord.ext.commands.view import StringView
 import ai
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
+from names import norm_name, stem, SELF_WORDS, names_of, all_aliases
 from config import TTS_SETTINGS
 from data import player_funds
 from utils import parse_duration, fmt_duration, utcnow
@@ -86,6 +87,7 @@ MISSING_WHAT = {
     "delay":    {"ru": "какую задержку", "uk": "яку затримку", "sk": "aké oneskorenie", "en": "the delay"},
     "choice":   {"ru": "что выбрать", "uk": "що обрати", "sk": "čo vybrať", "en": "the choice"},
     "number":   {"ru": "какое число", "uk": "яке число", "sk": "aké číslo", "en": "the number"},
+    "alias":    {"ru": "какое прозвище", "uk": "яке прізвисько", "sk": "akú prezývku", "en": "which nickname"},
 }
 # формы единиц после «на»: одна, 2–4, много
 UNITS = {
@@ -168,6 +170,8 @@ ECO, INFO, CASINO, WORK, FUN, VOICE, MOD = ("💰 Экономика", "👤 П�
                                            "💼 Работа и заработок", "🎭 Развлечения", "🎙️ Голос и ИИ",
                                            "🛡️ Модерация (с подтверждением)")
 STATIONS = ("зал", "касса", "фри", "выдача", "сборка", "макавто", "гриль")
+NAMES = "🏷️ Прозвища"
+ALIAS = P("alias", "text", kw="alias")
 
 ACTIONS = [
     Action("balance", "money", "свой баланс, сколько у меня денег", "сколько у меня денег", ECO),
@@ -223,6 +227,16 @@ ACTIONS = [
     Action("voice", "aivoice", "сменить голос озвучки, voice: male или female", "говори мужским голосом", VOICE,
            (P("voice", "choice", kw="voice_name", choices=("male", "female")),)),
     Action("forget", "aiclear", "очистить память разговора ИИ", "забудь наш разговор", VOICE),
+
+    Action("alias_add", "alias add", "запомнить прозвище участника: «запомни, что Петруха — это Петя», «зови меня "
+           "Сашка»; member — кому (не назван — себе), alias — новое прозвище", "запомни, что Петруха — это Петя",
+           NAMES, (MEMBER_OPT, ALIAS)),
+    Action("alias_remove", "alias remove", "забыть прозвище: «забудь, что я Сашка», «убери прозвище Петруха»; "
+           "member — у кого (можно не называть), alias — какое прозвище", "убери прозвище Петруха",
+           NAMES, (MEMBER_OPT, ALIAS)),
+    Action("alias_show", "alias", "показать прозвища: свои («какие у меня прозвища») или участника («как ещё "
+           "зовут Петю»)", "какие у меня прозвища", NAMES, (P("member", "member", required=False, kw="member"),)),
+    Action("alias_list", "alias list", "показать все прозвища на сервере", "покажи все прозвища", NAMES),
 
     Action("mute", "mute", "тайм-аут (мут) участнику", "замуть Петю на 10 минут", MOD,
            (P("member", "member"), P("duration", "duration", required=False, default="10m"), REASON),
@@ -289,8 +303,9 @@ PARSE_PROMPT = (
     "unsupported — явно просят бота что-то сделать на сервере, но такого действия нет в списке.\n"
     "lang — язык фразы.\n"
     "args — только параметры выбранного действия; параметр, которого нет во фразе, не добавляй:\n"
-    "member — имя участника; если похоже на кого-то из списка участников, напиши имя точно как в списке; "
-    "сам говорящий — \"me\".\n"
+    "member — имя участника; если похоже на кого-то из списка участников или на прозвище из списка прозвищ, "
+    "напиши основное имя участника точно как в списке; сам говорящий — \"me\".\n"
+    "alias — прозвище ровно как его назвали, в именительном падеже («Петруху» → \"Петруха\").\n"
     "amount — целое число (тысяча = 1000, «пять кусков» = 5000). bet — целое число, \"all\" (ва-банк) "
     "или \"half\" (половина).\n"
     "duration и delay — срок: 30s, 10m, 2h, 7d; «навсегда» = \"perm\"; delay \"off\" — выключить.\n"
@@ -351,31 +366,18 @@ def yes_no(text: str) -> Optional[bool]:
 
 
 # ── Поиск участника по имени на слух ──────────────────────────
-TRANSLIT = dict(zip("абвгґдеёєжзиіїйклмнопрстуфхцчшщъыьэюя",
-                    ["a", "b", "v", "g", "g", "d", "e", "e", "e", "zh", "z", "i", "i", "i", "y", "k", "l", "m", "n",
-                     "o", "p", "r", "s", "t", "u", "f", "h", "c", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"]))
-SELF_WORDS = {"me", "я", "мне", "меня", "себя", "себе", "мене", "мені", "собі", "ja", "mňa", "mna", "mne", "seba",
-              "myself", "self"}
-
-
-def norm_name(text: str) -> str:
-    """Имя без регистра, диакритики, эмодзи и алфавита: «Петя» и «Petya» сравниваются одинаково."""
-    text = unicodedata.normalize("NFKD", (text or "").lower())
-    text = "".join(TRANSLIT.get(c, c) for c in text if not unicodedata.combining(c))
-    text = re.sub(r"[^a-z0-9]", "", text)
-    for a, b in (("kh", "h"), ("ts", "c"), ("j", "y"), ("w", "v"), ("ck", "k"), ("ph", "f"), ("x", "ks"), ("q", "k")):
-        text = text.replace(a, b)
-    return text
-
+# Имена сравниваются нормализованными (names.py): ник, имя аккаунта и прозвища из !alias.
 
 def name_score(query: str, member) -> float:
     best = 0.0
-    for raw in {member.display_name, member.name, getattr(member, "global_name", None) or ""}:
+    for raw in names_of(member):
         name = norm_name(raw)
         if not name:
             continue
         if name == query:
             return 1.0
+        if stem(name) == stem(query):
+            best = max(best, 0.97)                  # «Петруху» → «Петруха»
         if len(query) >= 3 and (name.startswith(query) or query in name):
             best = max(best, 0.9)
         best = max(best, difflib.SequenceMatcher(None, query, name).ratio())
@@ -397,6 +399,12 @@ def find_member(guild, query, author, voice_members=()):
         raise LookupError(raw)
     pool = {m.id: m for m in [*voice_members, *getattr(guild, "members", [])] if not getattr(m, "bot", False)}
     in_voice = {m.id for m in voice_members}
+    for same in (lambda n: n == q, lambda n: stem(n) == stem(q)):   # точное имя/прозвище, потом с падежом
+        hits = [m for m in pool.values() if any(same(norm_name(n)) for n in names_of(m))]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise ValueError(" или ".join(m.display_name for m in hits[:3]))
     scored = sorted(((name_score(q, m) + (0.05 if m.id in in_voice else 0), m) for m in pool.values()),
                     key=lambda x: x[0], reverse=True)
     if not scored or scored[0][0] < 0.75:
@@ -658,9 +666,15 @@ class JarvisCog(commands.Cog):
             if recent:
                 context = "Последние реплики (для контекста):\n" + "\n".join(
                     f"{m['role']}: {m['content'][:200]}" for m in recent) + "\n"
+        known = []                                  # прозвища из !alias — чтобы «замуть Петруху» нашёл Petya
+        for uid, found in list(all_aliases(guild.id).items())[:40]:
+            member = guild.get_member(uid)
+            if member is not None:
+                known.append(f"{member.display_name} — {', '.join(found[:6])}")
         prompt = (f"{context}Говорит: {user.display_name}\n"
                   f"Участники в войсе: {', '.join(voice_names) or '—'}\n"
-                  f"Фраза: {question}")
+                  + (f"Прозвища участников: {'; '.join(known)}\n" if known else "")
+                  + f"Фраза: {question}")
         raw = await ai.ask(PARSE_PROMPT, prompt, max_tokens=400, temperature=0)
         if extract_json(raw) is None:
             print(f"[jarvis] {user.display_name}: разбор вернул не JSON ({len(raw)} симв.) — считаю обычным вопросом")
@@ -685,10 +699,10 @@ class JarvisCog(commands.Cog):
         if command is None:
             return await refuse("нет в белом списке или модуль не загружен", tr("unsupported", lang))
         if owner_only(command):
-            return await refuse(f"!{command.name} — owner-команда", tr("forbidden", lang))
+            return await refuse(f"!{command.qualified_name} — owner-команда", tr("forbidden", lang))
         ctx = make_context(self.bot, user, channel, command)
         if (denied := await self.check_rights(ctx, command, lang)) is not None:
-            return await refuse(f"проверка прав !{command.name} не пройдена", denied)
+            return await refuse(f"проверка прав !{command.qualified_name} не пройдена", denied)
         try:
             values = await self.convert(ctx, action, intent.args, lang, vc)
         except NotUnderstood as e:
@@ -719,15 +733,15 @@ class JarvisCog(commands.Cog):
         try:
             if await command.can_run(ctx):
                 return None
-            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — проверка вернула «нельзя»")
+            print(f"[jarvis] {ctx.author.display_name}: !{command.qualified_name} — проверка вернула «нельзя»")
         except commands.NotOwner:
-            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — только для владельца бота")
+            print(f"[jarvis] {ctx.author.display_name}: !{command.qualified_name} — только для владельца бота")
             return tr("forbidden", lang)
         except (commands.BotMissingPermissions, commands.BotMissingRole) as e:
-            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — у бота не хватает прав: {e}")
+            print(f"[jarvis] {ctx.author.display_name}: !{command.qualified_name} — у бота не хватает прав: {e}")
             return tr("bot_rights", lang)
         except commands.CommandError as e:
-            print(f"[jarvis] {ctx.author.display_name}: !{command.name} — {type(e).__name__}: {e}")
+            print(f"[jarvis] {ctx.author.display_name}: !{command.qualified_name} — {type(e).__name__}: {e}")
         return tr("no_rights", lang)
 
     async def convert(self, ctx, action: Action, args: dict, lang: str, vc) -> dict:
@@ -737,7 +751,8 @@ class JarvisCog(commands.Cog):
             raw = args.get(p.name)
             if raw is None or str(raw).strip().lower() in ("", "null", "none"):
                 raw = p.default
-            missing = NotUnderstood(tr("missing", lang, what=MISSING_WHAT.get(p.kind, MISSING_WHAT["choice"])[lang]))
+            what = MISSING_WHAT.get(p.name) or MISSING_WHAT.get(p.kind) or MISSING_WHAT["choice"]
+            missing = NotUnderstood(tr("missing", lang, what=what[lang]))
             if raw is None:
                 if p.required:
                     raise missing
@@ -824,7 +839,7 @@ class JarvisCog(commands.Cog):
     @staticmethod
     def shown(command, action: Action, values: dict, redact: bool = False) -> str:
         """Команда как в чате: !mute @Petya 10м «за спам». redact — для логов: свободный текст только длиной."""
-        parts = [f"!{command.name}"]
+        parts = [f"!{command.qualified_name}"]
         for p in action.params:
             v = values.get(p.name)
             if v is None:
@@ -867,12 +882,14 @@ class JarvisCog(commands.Cog):
         ctx.channel.closed = True
         print(f"[jarvis] {p.user.display_name}: {p.trace} — {'ошибка' if failure else 'выполнено'} за "
               f"{time.monotonic() - started:.1f} с, сообщений в чат {len(ctx.channel.sent)}")
-        footer = f"!{command.name}"
+        footer = f"!{command.qualified_name}"
         if failure:
             return await reply(failure, footer=footer)
         if bye:
             return await reply(tr("bye", p.lang), footer=footer, speak_text=None)
         if not self.speaking(p.vc):
+            if ctx.channel.sent:            # команда сама всё показала в чате — не дублируем её итог
+                return self.remember(p, f"Выполнил {p.shown}")
             return await reply(f"✅ Выполнил `{p.shown}`", footer=footer, speak_text=None)
         await reply(await self.summarize(p, plain_text(ctx.channel.sent, p.channel.guild)), footer=footer)
 
@@ -890,6 +907,11 @@ class JarvisCog(commands.Cog):
         print(f"[jarvis] {p.user.display_name}: пересказ итога за {time.monotonic() - started:.1f} с, "
               f"{len(text)} символов")
         return text
+
+    def remember(self, p: Pending, text: str):
+        voice_cog = self.bot.get_cog("VoiceAICog")
+        if voice_cog is not None:
+            voice_cog.remember(p.channel.guild.id, p.user.display_name, p.question, text)
 
     # ── Подтверждение ─────────────────────────────────────────
     async def ask_confirm(self, p: Pending):

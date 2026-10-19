@@ -22,6 +22,7 @@ MCD_FILE        = "mcd_data.json"
 GUILD_CFG_FILE  = "guild_config.json"
 MOD_FILE        = "mod_data.json"
 CASINO_FILE     = "casino_stats.json"
+ALIASES_FILE    = "user_aliases.json"
 
 
 # ── JSON helpers ──────────────────────────────────────────────
@@ -64,6 +65,7 @@ USER_ORDERS_COMPLETED = load_json(ORDERS_FILE)
 mcd_data          = load_json(MCD_FILE)
 guild_config      = load_json(GUILD_CFG_FILE)          # {guild_id: {log_channel, automod, autorole, ...}}
 casino_stats      = load_json(CASINO_FILE)             # {uid: {games, wins, wagered, net, biggest}}
+user_aliases      = load_json(ALIASES_FILE)            # {guild_id: {user_id: ["Петя", "Петруха"]}} — прозвища по ID
 mod_data          = load_json(MOD_FILE)                # кейсы, временные баны, локдауны
 for _key, _default in (("cases", []), ("tempbans", []), ("lockdown", {})):
     mod_data.setdefault(_key, _default)
@@ -84,6 +86,7 @@ def save_mcd():         save_json(MCD_FILE,         mcd_data)
 def save_guild_cfg():   save_json(GUILD_CFG_FILE,   guild_config)
 def save_mod():         save_json(MOD_FILE,         mod_data)
 def save_casino():      save_json(CASINO_FILE,      casino_stats)
+def save_aliases():     save_json(ALIASES_FILE,     user_aliases)
 
 
 # ── Mafia state ───────────────────────────────────────────────
