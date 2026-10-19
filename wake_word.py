@@ -8,10 +8,13 @@ wake_word.py — локальный детектор обращения «Баз
 не отправляются. Whisper по-прежнему проверяет обращение по тексту — ложное срабатывание стоит один запрос.
 
 Модель vosk-model-small-ru-0.22 скачивается при первом !listen (проверяется SHA-256) и хранится
-в облегчённом виде: без большого графа языка (Gr.fst) и со словарём из нескольких слов — так она
-занимает ~80 МиБ памяти вместо ~170. Слова «базарчик» в её словаре нет, но она надёжно слышит его
-как «базар» + «чик», одинаково на русском, украинском и словацком. В памяти модель держится,
-только пока бот слушает войс.
+в облегчённом виде: без большого графа языка (Gr.fst) и со словарём из пары десятков слов — так она
+занимает ~80 МиБ памяти вместо ~170. Точности это не стоит: детектор ищет слова по списку (грамматика),
+а Gr.fst нужен только для свободной речи — замер полной модели дал те же результаты. Слова «базарчик»
+в словаре нет, но модель надёжно слышит его как «базар» + «чик», одинаково на русском, украинском и
+словацком. Чтобы похожие фразы («базилик», «базар чиста») не принимались за обращение, в списке есть
+слова-соперники (WAKE_MODE=rivals, по умолчанию); WAKE_MODE=classic — прежний список из трёх слов.
+В памяти модель держится, только пока бот слушает войс.
 
 Если vosk не установлен, модель не скачалась или детектор выключен (LOCAL_WAKE=0), бот работает
 как раньше — каждую фразу распознаёт Whisper.
@@ -35,8 +38,21 @@ MODEL_SHA256 = "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4
 MODEL_DIR    = os.path.abspath("vosk-wake-ru")
 WINDOW_SEC   = 2.0           # слушаем только начало фразы: обращение стоит первым, «Слушай, Базарчик» влезает
 WAKE_BY_SEC  = 1.2           # «базар» должен начаться не позже — дальше уже не обращение, а середина фразы
-GRAMMAR      = json.dumps(["базар", "чик", "[unk]"], ensure_ascii=False)
-KEEP_WORDS   = ("<eps>", "!SIL", "[unk]", "#0", "<s>", "</s>", "базар", "чик")
+# Слова-соперники: похожи на «базар» + «чик», но обращением не являются («базилик», «бабах, и чик»,
+# «базар чиста», «базаре»). Когда в словаре только «базар», «чик» и [unk], модели не из чего выбрать, и такие
+# фразы она слышит как обращение. С соперниками ложных срабатываний на замерах нет (37/37 против 33/37),
+# памяти и CPU столько же. «Базарчику» (укр.) модель слышит как «базар чика» / «базар чику» — это обращение.
+RIVALS       = ("чика", "чику", "базара", "базаре", "базары", "базарить", "базарный", "базарная", "чики", "чек",
+                "чип", "чих", "чирик", "чиста", "чисто", "базилик", "бизнес", "бабах", "базу", "база", "вокзал")
+# WAKE_MODE: rivals — с соперниками (по умолчанию); classic — прежний вариант: только «базар», «чик», [unk]
+MODES        = {"rivals": (("базар", "чик", "[unk]", *RIVALS), ("чик", "чика", "чику")),
+                "classic": (("базар", "чик", "[unk]"), ("чик",))}
+MODE         = os.getenv("WAKE_MODE", "rivals").strip().lower()
+if MODE not in MODES:
+    print(f"[wake] WAKE_MODE={MODE!r} не знаю — беру rivals (есть: {', '.join(MODES)})")
+    MODE = "rivals"
+# в словаре на диске — слова обоих режимов: переключение WAKE_MODE не требует новой модели
+KEEP_WORDS   = ("<eps>", "!SIL", "[unk]", "#0", "<s>", "</s>", "базар", "чик", *RIVALS)
 # файлы модели, которые нужны для поиска по словарю (Gr.fst — граф свободной речи — не нужен)
 NEEDED = ("am/final.mdl", "conf/model.conf", "conf/mfcc.conf", "graph/HCLr.fst", "graph/disambig_tid.int",
           "graph/phones/word_boundary.int", "ivector/final.dubm", "ivector/final.ie", "ivector/final.mat",
@@ -52,9 +68,23 @@ def to_16k_mono(pcm: bytes) -> bytes:
     return array("h", ((a + b + c) // 3 for a, b, c in zip(left[0:n:3], left[1:n:3], left[2:n:3]))).tobytes()
 
 
-def called(words) -> bool:
-    """Обращение — это «базар», сразу за ним «чик», в самом начале фразы. «Был на базаре» не считается."""
-    return any(a[0] == "базар" and b[0] == "чик" and a[1] <= WAKE_BY_SEC for a, b in zip(words, words[1:]))
+def grammar(mode: str = None) -> str:
+    return json.dumps(list(MODES[mode or MODE][0]), ensure_ascii=False)
+
+
+def called(words, mode: str = None) -> bool:
+    """Обращение — это «базар», сразу за ним «чик» (в режиме rivals и «чика»/«чику»), в самом начале фразы.
+    «Был на базаре» не считается."""
+    tails = MODES[mode or MODE][1]
+    return any(a[0] == "базар" and b[0] in tails and a[1] <= WAKE_BY_SEC for a, b in zip(words, words[1:]))
+
+
+def _model_words(model_dir: str) -> set:
+    try:
+        with open(os.path.join(model_dir, "graph", "words.txt"), encoding="utf-8") as f:
+            return {line.split(" ", 1)[0] for line in f if line.strip()}
+    except OSError:
+        return set()
 
 
 def _read_words(stream) -> dict:
@@ -92,10 +122,29 @@ def _read_words(stream) -> dict:
 
 
 def prepare_model(model_dir: str = None, url: str = None, sha256: str = None) -> str:
-    """Скачивает модель и раскладывает облегчённую версию в model_dir. Уже готовая — не трогается."""
+    """Скачивает модель и раскладывает облегчённую версию в model_dir. Уже готовая — не трогается.
+    Модель прошлой версии (словарь из 8 слов) пересобирается для соперников; не вышло скачать —
+    работаем на ней в режиме classic, а не остаёмся без детектора."""
+    global MODE
     model_dir, url, sha256 = model_dir or MODEL_DIR, url or MODEL_URL, sha256 or MODEL_SHA256
     if all(os.path.exists(os.path.join(model_dir, f)) for f in (*NEEDED, "graph/words.txt")):
-        return model_dir
+        have = _model_words(model_dir)
+        missing = set(MODES[MODE][0]) - have
+        if not missing:
+            return model_dir
+        print(f"[wake] В словаре модели нет {len(missing)} слов режима {MODE} — скачиваю и пересобираю модель")
+        try:
+            return _build(model_dir, url, sha256)
+        except Exception as e:
+            if set(MODES["classic"][0]) <= have:
+                print(f"[wake] Пересобрать модель не вышло ({type(e).__name__}: {e}) — работаю в режиме classic")
+                MODE = "classic"
+                return model_dir
+            raise
+    return _build(model_dir, url, sha256)
+
+
+def _build(model_dir: str, url: str, sha256: str) -> str:
     part, tmp = model_dir + ".zip.part", model_dir + ".tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     try:
@@ -179,12 +228,12 @@ class WakeWord:
               "этот файл удалён специально, чтобы модель занимала меньше памяти")
         started = time.monotonic()
         model = vosk.Model(path)
-        print(f"[wake] Модель загружена за {time.monotonic() - started:.1f} с; {diag.report()}")
+        print(f"[wake] Модель загружена за {time.monotonic() - started:.1f} с, режим {MODE}; {diag.report()}")
         return vosk, model
 
     def _spot(self, model, audio: bytes) -> list:
         with self._lock:
-            rec = self.vosk.KaldiRecognizer(model, 16000, GRAMMAR)
+            rec = self.vosk.KaldiRecognizer(model, 16000, grammar())
             rec.SetWords(True)
             rec.AcceptWaveform(audio)
             result = json.loads(rec.FinalResult())
