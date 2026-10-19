@@ -31,8 +31,9 @@ def clean(alias: str) -> str:
     return names.clean_alias(alias)
 
 
-def problem(guild, target, alias: str, admin: bool) -> Optional[str]:
-    """Почему прозвище нельзя добавить; None — можно. Администратору — только технические проверки."""
+def problem(guild, target, alias: str, admin: bool, extra: int = 0) -> Optional[str]:
+    """Почему прозвище нельзя добавить; None — можно. Администратору — только технические проверки.
+    extra — сколько прозвищ этому человеку уже добавляется вместе с этим (для лимита)."""
     low, high = names.ALIAS_LEN
     if "<@" in alias or "@everyone" in alias or "@here" in alias:
         return "в прозвище не должно быть упоминаний"
@@ -55,42 +56,73 @@ def problem(guild, target, alias: str, admin: bool) -> Optional[str]:
         if m.id != target.id and not m.bot and any(
                 names.norm_name(n) == key for n in (m.display_name, m.name, getattr(m, "global_name", None) or "")):
             return f"так зовут {m.display_name} — будет путаница"
-    if len(names.aliases_of(guild.id, target.id)) >= names.MAX_ALIASES:
+    if len(names.aliases_of(guild.id, target.id)) + extra >= names.MAX_ALIASES:
         return f"у {target.display_name} уже {names.MAX_ALIASES} прозвищ — это максимум"
     return None
+
+
+def quoted(aliases) -> str:
+    """«Петруха», «Петюня» — для чата."""
+    return ", ".join(f"«{discord.utils.escape_markdown(a)}»" for a in aliases)
+
+
+def check_many(guild, target, aliases: list, admin: bool):
+    """Какие из прозвищ можно добавить: (можно, [почему нельзя остальные])."""
+    ok, errors = [], []
+    for alias in aliases:
+        err = problem(guild, target, alias, admin, extra=len(ok))
+        if err is None:
+            ok.append(alias)
+        else:
+            errors.append(err if len(aliases) == 1 else f"«{discord.utils.escape_markdown(alias)}» — {err}")
+    return ok, errors
 
 
 @dataclass
 class Change:
     kind: str           # add, remove, clear
     target: object
-    alias: str
+    aliases: list       # add и remove — одно или несколько прозвищ, clear — пусто
     author: object
 
     @property
+    def alias(self) -> str:
+        return ", ".join(self.aliases)
+
+    @property
     def what(self) -> str:
-        alias = discord.utils.escape_markdown(self.alias)
+        shown, many = quoted(self.aliases), len(self.aliases) > 1
+        word = "прозвища" if many else "прозвище"
         whom = "себе" if self.target.id == self.author.id else self.target.mention
-        return {"add": f"добавить {whom} прозвище «{alias}»",
-                "remove": f"убрать {'своё' if whom == 'себе' else 'у ' + whom} прозвище «{alias}»",
+        mine = "свои" if many else "своё"
+        return {"add": f"добавить {whom} {word} {shown}",
+                "remove": f"убрать {mine if whom == 'себе' else 'у ' + whom} {word} {shown}",
                 "clear": f"убрать {'все свои прозвища' if whom == 'себе' else 'все прозвища у ' + whom}"}[self.kind]
 
 
 def apply(change: Change) -> str:
     """Применяет изменение и возвращает текст для чата."""
-    guild, t, alias = change.target.guild, change.target, change.alias
-    shown = discord.utils.escape_markdown(alias)
+    guild, t = change.target.guild, change.target
+    shown = quoted(change.aliases)
     if change.kind == "add":
-        previous = names.add_alias(guild.id, t.id, alias)
-        took = guild.get_member(previous) if previous else None
-        text = f"🏷️ {t.mention} теперь откликается и на «{shown}»" + (
-            f" (прозвище забрано у {took.display_name if took else 'другого участника'})" if previous else "") + "."
+        taken = []
+        for alias in change.aliases:
+            previous = names.add_alias(guild.id, t.id, alias)
+            if previous:
+                took = guild.get_member(previous)
+                taken.append((alias, took.display_name if took else "другого участника"))
+        if len(change.aliases) == 1 and taken:
+            note = f"прозвище забрано у {taken[0][1]}"
+        else:
+            note = "; ".join(f"«{discord.utils.escape_markdown(a)}» забрано у {who}" for a, who in taken)
+        text = f"🏷️ {t.mention} теперь откликается и на {shown}" + (f" ({note})" if taken else "") + "."
     elif change.kind == "remove":
-        names.remove_alias(guild.id, t.id, alias)
-        text = f"🗑️ У {t.mention} больше нет прозвища «{shown}»."
+        for alias in change.aliases:
+            names.remove_alias(guild.id, t.id, alias)
+        text = f"🗑️ У {t.mention} больше нет {'прозвищ' if len(change.aliases) > 1 else 'прозвища'} {shown}."
     else:
         text = f"🧽 У {t.mention} убраны все прозвища ({names.clear_aliases(guild.id, t.id)})."
-    print(f"[alias] {change.author.display_name}: {change.kind} «{alias}» → {t.display_name}")
+    print(f"[alias] {change.author.display_name}: {change.kind} «{change.alias}» → {t.display_name}")
     return text
 
 
@@ -128,13 +160,17 @@ class ApprovalView(discord.ui.View):
         if not self.close():
             return await interaction.response.send_message("Запрос уже решён.", ephemeral=True)
         who = interaction.user.display_name
+        errors = []
+        if approved and self.change.kind == "add":   # за час, пока ждали, прозвище мог занять кто-то другой
+            self.change.aliases, errors = check_many(self.change.target.guild, self.change.target,
+                                                     self.change.aliases, admin=False)
         if not approved:
             status = f"✖️ Отклонил {who}."
-        elif self.change.kind == "add" and (err := problem(self.change.target.guild, self.change.target,
-                                                           self.change.alias, admin=False)):
-            status = f"❌ Не применено: {err}."
+        elif not self.change.aliases:
+            status = f"❌ Не применено: {'; '.join(errors)}."
         else:
-            status = f"✅ Одобрил {who}. {apply(self.change)}"
+            status = f"✅ Одобрил {who}. {apply(self.change)}" + (
+                f"\nНе применено: {'; '.join(errors)}." if errors else "")
         print(f"[alias] Запрос {self.change.author.display_name} «{self.change.alias}»: "
               f"{'одобрен' if approved else 'отклонён'} ({who})")
         await interaction.response.edit_message(embed=request_embed(self.change, status), view=None)
@@ -185,7 +221,8 @@ class AliasCog(commands.Cog):
         brief="Прозвища участника — по ним бот понимает, о ком речь",
         help="`!alias` — твои прозвища. Администраторам: `!alias @user` — прозвища участника, "
              "`!alias list` — все на сервере.\n"
-             "`!alias add [@user] прозвище` — добавить, `!alias remove [@user] прозвище` — убрать, "
+             "`!alias add [@user] прозвище` — добавить (можно несколько через запятую: "
+             "`!alias add Петруха, Петюня, Петро`), `!alias remove [@user] прозвище` — убрать, "
              "`!alias clear [@user]` — убрать все.\n"
              "Администраторы меняют прозвища любого участника сразу. Остальные — только свои и только "
              "с одобрения администратора (бот пришлёт запрос с кнопками).\n"
@@ -204,24 +241,34 @@ class AliasCog(commands.Cog):
     @alias.command(name="add", aliases=["добавить"], brief="Добавить прозвище")
     @commands.guild_only()
     async def alias_add(self, ctx, member: Optional[discord.Member] = None, *, alias: str):
-        target, alias = member or ctx.author, clean(alias)
+        target, aliases = member or ctx.author, names.split_aliases(alias)
         if target.bot:
             return await ctx.send("❌ Ботам прозвища не нужны.", delete_after=8)
-        if err := problem(ctx.guild, target, alias, is_admin(ctx.author, ctx.channel)):
-            return await ctx.send(f"❌ Нельзя: {err}.", delete_after=12)
-        await self.change(ctx, Change("add", target, alias, ctx.author))
+        if not aliases:
+            return await ctx.send("❌ Напиши прозвище: `!alias add Петруха` или несколько через запятую.",
+                                  delete_after=10)
+        ok, errors = check_many(ctx.guild, target, aliases, is_admin(ctx.author, ctx.channel))
+        if not ok:
+            return await ctx.send(f"❌ Нельзя: {'; '.join(errors)}.", delete_after=12)
+        if errors:
+            await ctx.send(f"⚠️ Пропускаю: {'; '.join(errors)}.", delete_after=15)
+        await self.change(ctx, Change("add", target, ok, ctx.author))
 
     @alias.command(name="remove", aliases=["del", "убрать"], brief="Убрать прозвище")
     @commands.guild_only()
     async def alias_remove(self, ctx, member: Optional[discord.Member] = None, *, alias: str):
-        alias = clean(alias)
+        aliases = names.split_aliases(alias) or [clean(alias)]
         if member is None:                  # «убери прозвище Петруха» — у кого оно есть
-            owner = names.alias_owner(ctx.guild.id, alias)
+            owner = names.alias_owner(ctx.guild.id, aliases[0])
             member = ctx.guild.get_member(owner) if owner else ctx.author
-        stored = names.stored_alias(ctx.guild.id, member.id, alias)
-        if stored is None:
-            return await ctx.send(f"❌ У {member.display_name} нет прозвища «{discord.utils.escape_markdown(alias)}».",
-                                  delete_after=10)
+        found = {a: names.stored_alias(ctx.guild.id, member.id, a) for a in aliases}
+        stored = [s for s in found.values() if s]
+        missing = [a for a, s in found.items() if s is None]
+        if not stored:
+            return await ctx.send(f"❌ У {member.display_name} нет {'прозвищ' if len(missing) > 1 else 'прозвища'} "
+                                  f"{quoted(missing)}.", delete_after=10)
+        if missing:
+            await ctx.send(f"⚠️ У {member.display_name} нет {quoted(missing)} — пропускаю.", delete_after=12)
         await self.change(ctx, Change("remove", member, stored, ctx.author))
 
     @alias.command(name="clear", aliases=["очистить"], brief="Убрать все прозвища участника")
@@ -230,7 +277,7 @@ class AliasCog(commands.Cog):
         member = member or ctx.author
         if not names.aliases_of(ctx.guild.id, member.id):
             return await ctx.send(f"❌ У {member.display_name} нет прозвищ.", delete_after=8)
-        await self.change(ctx, Change("clear", member, "", ctx.author))
+        await self.change(ctx, Change("clear", member, [], ctx.author))
 
     @alias.command(name="list", aliases=["все", "all"], brief="Все прозвища на сервере")
     @commands.guild_only()

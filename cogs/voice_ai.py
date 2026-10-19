@@ -36,6 +36,14 @@ def answer_embed(user, question: str, reply: str) -> discord.Embed:
     return embed
 
 
+UNTRANSLIT_PROMPT = (
+    "Тебе дают текст из чата, написанный транслитом: русские или украинские слова латиницей («privet kak dela», "
+    "«4to delaesh», «shcho robysh», «ya tebya ne slyshu»). Перепиши его обычными буквами — кириллицей, на том же "
+    "языке (русский — по-русски, украинский — по-украински), с правильной орфографией. Сохрани слова, их порядок, "
+    "пунктуацию, эмодзи, ссылки, @упоминания и ники. Слова, которые и так написаны правильно — английские, "
+    "словацкие, кириллица, — не меняй. Не переводи на другой язык, не исправляй смысл, не добавляй пояснений. "
+    "Ответь только переписанным текстом.")
+
 # Голоса озвучки по языку ответа: (женский, мужской)
 TTS_VOICES = {
     "ru": ("ru-RU-SvetlanaNeural", "ru-RU-DmitryNeural"),
@@ -177,6 +185,37 @@ class VoiceAICog(commands.Cog):
         TTS_SETTINGS["voice"] = match
         await ctx.send(f"✅ Голос изменён на `{match}` — "
                        f"{'мужской' if match in MALE_VOICES else 'женский'} во всех языках озвучки.")
+
+    # ── Транслит → обычные буквы ──────────────────────────────
+    @commands.command(name="translit", aliases=["транслит", "детранслит", "untranslit"],
+                      brief="Переписать транслит обычными буквами",
+                      help="`!транслит privet kak dela` → «привет как дела»: русские и украинские слова латиницей — "
+                           "кириллицей, на том же языке. Ответь командой `!транслит` на чужое сообщение — бот "
+                           "перепишет его. Английские и словацкие слова, ники и ссылки не трогает.\n"
+                           "Словами: «@BazarčikPM переведи с транслита: privet kak dela».")
+    async def translit(self, ctx, *, text: str = None):
+        source = ctx.author
+        if not (text or "").strip():                  # ответ на сообщение — переписываем его
+            ref = getattr(ctx.message, "reference", None)
+            msg = getattr(ref, "resolved", None) if ref is not None else None
+            if msg is None and ref is not None and ref.message_id:
+                try:
+                    msg = await ctx.channel.fetch_message(ref.message_id)
+                except discord.HTTPException:
+                    msg = None
+            text = getattr(msg, "content", "") if isinstance(msg, discord.Message) else ""
+            source = getattr(msg, "author", source)
+        if not text.strip():
+            return await ctx.send("❌ Напиши текст: `!транслит privet kak dela` — или ответь командой `!транслит` "
+                                  "на сообщение.", delete_after=10)
+        try:
+            result = (await ai.ask(UNTRANSLIT_PROMPT, text[:1500], max_tokens=800, temperature=0)).strip()
+        except ai.AIError as e:
+            return await ctx.send(f"❌ {e}", delete_after=15)
+        print(f"[translit] {ctx.author.display_name}: {len(text)} симв. → {len(result)} симв.")
+        e = discord.Embed(description=result[:4000] or "—", color=discord.Color.teal())
+        e.set_author(name=f"🔤 Из транслита: {source.display_name}"[:256], icon_url=source.display_avatar.url)
+        await ctx.send(embed=e)
 
     # ── Режим ответа ──────────────────────────────────────────
     @commands.command(name="mode", aliases=["режим"], brief="Режим ответа ИИ: стандартный, язык админов, Юрчик",

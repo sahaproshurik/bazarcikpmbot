@@ -38,6 +38,40 @@ def stem(name: str) -> str:
     return name[:-1] if len(name) > 4 and name[-1] in "aeiouy" else name
 
 
+# Межъязыковой ключ — только для поиска людей, не для хранения прозвищ (там norm_name: файл прозвищ проверяется им).
+# Словацкое «č» звучит как «ч», а norm_name делает из него «c»; украинские «и» и «г» в латинице — «y» и «h»
+# (Микола = Mykola, Олег = Oleh); «й», «ы», «j» — тоже «i»; двойные буквы — одна (Анна = Ana).
+SLAVIC_LATIN = {"č": "ch", "ć": "ch", "š": "sh", "ś": "sh", "ž": "zh", "ż": "zh", "ł": "l"}
+
+
+def fold(key: str) -> str:
+    """Нормализованное имя (norm_name) → межъязыковой ключ: «mykola», «mikola» → «mikola»; «oleg», «oleh» → «oleh»."""
+    for a, b in (("shch", "sch"), ("y", "i"), ("g", "h")):
+        key = key.replace(a, b)
+    return re.sub(r"(.)\1+", r"\1", key)
+
+
+def loose_name(text: str) -> str:
+    """Имя как его произносят на любом из языков сервера: «Bazarčik», «Базарчик», «Bazarchik» — один ключ."""
+    return fold(norm_name("".join(SLAVIC_LATIN.get(c, c) for c in (text or "").lower())))
+
+
+ALIAS_SPLIT = re.compile(r"\s*(?:[,;\n]|\s(?:и|і|та|або|или|and|or|alebo|a)\s)\s*", re.IGNORECASE)
+
+
+def split_aliases(text: str) -> list:
+    """«Петруха, Петюня и Петро» → три прозвища, повторы (с точностью до падежа и алфавита) убраны.
+    Целиком в кавычках («Пат и Паташон») — одно прозвище."""
+    quoted = re.fullmatch(r"\s*[«\"“](.+)[»\"”]\s*", text or "")
+    parts = [quoted.group(1)] if quoted else ALIAS_SPLIT.split(text or "")
+    found = []
+    for part in parts:
+        alias = clean_alias(part)
+        if alias and not any(same_alias(alias, a) for a in found):
+            found.append(alias)
+    return found
+
+
 # ── Прозвища ──────────────────────────────────────────────────
 def _guild(guild_id) -> dict:
     users = user_aliases.get(str(guild_id), {})
@@ -194,20 +228,24 @@ def names_of(member) -> list:
 
 
 # ── Кто имелся в виду ─────────────────────────────────────────
-def name_score(query: str, member) -> float:
-    """Насколько нормализованное имя query похоже на участника (ник, имя, прозвища): 0…1."""
-    best = 0.0
+def name_score(query: str, member, loose: str = None) -> float:
+    """Насколько нормализованное имя query похоже на участника (ник, имя, прозвища): 0…1.
+    loose — межъязыковой ключ запроса (loose_name), если есть исходный текст; иначе — fold(query)."""
+    best, loose = 0.0, loose or fold(query)
     for raw in names_of(member):
-        name = norm_name(raw)
+        name, other = norm_name(raw), loose_name(raw)
         if not name:
             continue
         if name == query:
             return 1.0
-        if stem(name) == stem(query):
+        if other == loose:
+            best = max(best, 0.98)                  # «Mykola» → «Микола», «Bazarčik» → «Базарчик»
+        if stem(name) == stem(query) or stem(other) == stem(loose):
             best = max(best, 0.97)                  # «Петруху» → «Петруха»
-        if len(query) >= 3 and (name.startswith(query) or query in name):
+        if len(query) >= 3 and (name.startswith(query) or query in name or other.startswith(loose) or loose in other):
             best = max(best, 0.9)
-        best = max(best, difflib.SequenceMatcher(None, query, name).ratio())
+        best = max(best, difflib.SequenceMatcher(None, query, name).ratio(),
+                   difflib.SequenceMatcher(None, loose, other).ratio())
     return best
 
 
@@ -229,13 +267,15 @@ def find_member(guild, query, author, voice_members=()):
         raise LookupError(raw)
     pool = {m.id: m for m in [*voice_members, *getattr(guild, "members", [])] if not getattr(m, "bot", False)}
     in_voice = {m.id for m in voice_members}
-    for same in (lambda n: n == q, lambda n: stem(n) == stem(q)):   # точное имя/прозвище, потом с падежом
-        hits = [m for m in pool.values() if any(same(norm_name(n)) for n in names_of(m))]
+    lq = loose_name(raw)
+    for same in (lambda n: norm_name(n) == q, lambda n: stem(norm_name(n)) == stem(q),   # точно, потом с падежом,
+                 lambda n: loose_name(n) == lq, lambda n: stem(loose_name(n)) == stem(lq)):  # потом между языками
+        hits = [m for m in pool.values() if any(same(n) for n in names_of(m))]
         if len(hits) == 1:
             return hits[0]
         if len(hits) > 1:
             raise ValueError(" или ".join(m.display_name for m in hits[:3]))
-    scored = sorted(((name_score(q, m) + (0.05 if m.id in in_voice else 0), m) for m in pool.values()),
+    scored = sorted(((name_score(q, m, lq) + (0.05 if m.id in in_voice else 0), m) for m in pool.values()),
                     key=lambda x: x[0], reverse=True)
     if not scored or scored[0][0] < 0.75:
         raise LookupError(raw)
