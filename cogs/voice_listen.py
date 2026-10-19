@@ -126,7 +126,8 @@ WAKE_HINT       = "Базарчик, BazarčikPM"
 OK_SAID         = {"ru": "Хорошо.", "uk": "Добре.", "sk": "Dobre.", "en": "Okay."}
 MORE_IN_CHAT    = {"ru": "Остальное — в чате.", "uk": "Решта — в чаті.", "sk": "Zvyšok je v chate.",
                    "en": "The rest is in the chat."}
-SPEECH_CHARS    = 250        # голосом — одно-два предложения ответа ИИ, полностью — в чате
+SPEECH_CHARS    = 130        # голосом — одно-два предложения ответа ИИ (~10 с), полностью — в чате
+MUMBLE_SCORE    = -1.0       # уверенность Whisper ниже — короткая фраза в окне вопроса считается неразборчивой
 STOP_WORDS      = {"стоп", "хватит", "замолчи", "заткнись", "тихо", "молчи", "стой", "досить", "годі", "тихіше",
                    "stop", "stoj", "dost", "dosť", "ticho", "prestaň", "enough", "quiet", "shut"}
 LISTENING       = {"ru": "Слушаю, {name}.", "uk": "Слухаю, {name}.", "sk": "Počúvam, {name}.",
@@ -671,6 +672,13 @@ class ListenSession:
                 await asyncio.sleep(0.25)
             if self.followup.get(user.id, 0):     # окно — от конца «Слушаю», а не от его начала
                 self.followup[user.id] = max(self.followup[user.id], time.monotonic() + FOLLOWUP_SEC)
+            return
+        score = info.get("score")
+        if (waiting and score is not None and score < MUMBLE_SCORE and len(question.split()) <= 2
+                and not self.confirming(user)):   # «э-э», шум — не вопрос; «да» на подтверждение не трогаем
+            self.count("dropped")
+            print(f"[listen] {tag}: {note} — неразборчиво (слов: {len(question.split())}), за вопрос не считаю, "
+                  "жду дальше")
             return
         self.count("questions")
         print(f"[listen] {tag}: {note} — вопрос боту (слов: {len(question.split())})")

@@ -82,6 +82,19 @@ def voice_for(text: str) -> str:
 _hushed: dict = {}          # guild_id → сколько раз озвучку обрывали «Базарчик, стоп»
 
 
+def stop_playback(vc):
+    """Обрывает только звук бота. VoiceClient.stop() в py-cord 2.8 останавливает ещё и приём голоса
+    (_reader.stop()) — после «Базарчик, стоп» бот глох до переподключения (живой войс 19.10)."""
+    if not hasattr(vc, "_player"):
+        return vc.stop()                    # другая версия py-cord — как умеет
+    if vc._player is not None:
+        vc._player.stop()
+    future = getattr(vc, "_player_future", None)
+    if future:
+        vc.loop.call_soon_threadsafe(vc._set_future_result_if_pending, future, None)
+    vc._player, vc._player_future = None, None
+
+
 def hush(vc) -> bool:
     """«Базарчик, стоп»: обрывает фразу, которая звучит, и выбрасывает всё, что ждёт очереди.
     True — бот в этот момент говорил."""
@@ -89,7 +102,7 @@ def hush(vc) -> bool:
     _hushed[gid] = _hushed.get(gid, 0) + 1
     playing = vc.is_playing()
     if playing:
-        vc.stop()
+        stop_playback(vc)
     return playing
 
 
@@ -124,8 +137,11 @@ async def say(vc: discord.VoiceClient, text: str):
     playing = time.monotonic()
 
     def after_play(error):
-        print(f"[tts] {voice}: прозвучало за {time.monotonic() - playing:.1f} с"
-              + (f", ошибка: {error!r}" if error else ""))
+        took = time.monotonic() - playing
+        slow = took > 3 * (len(text) / 10 + 2)        # обычно ~10 символов в секунду
+        print(f"[tts] {voice}: прозвучало за {took:.1f} с"
+              + (f", ошибка: {error!r}" if error else "")
+              + (" — подозрительно долго для такой фразы: плеер подвисал" if slow else ""))
         try: os.unlink(tts_path)
         except OSError: pass
     vc.play(discord.FFmpegPCMAudio(tts_path), after=after_play)
