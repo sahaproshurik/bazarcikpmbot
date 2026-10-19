@@ -285,6 +285,45 @@ def find_member(guild, query, author, voice_members=()):
     return scored[0][1]
 
 
+def root(key: str) -> str:
+    """Ключ без конечных гласных: «pete», «petia», «petiu» → «pet» — для падежей коротких имён."""
+    return key.rstrip("aeiouy")
+
+
+def said(text: str, names) -> bool:
+    """Есть ли во фразе одно из имён — словом или парой-тройкой слов, с падежом, транслитом и между языками
+    («Пете» → «Petya», «подкидыша» → «подкидыш», «Перебережчика» → «Bc. Bc. PereBerezcik»)."""
+    words = re.findall(r"[^\W\d_][\w'’]*", text or "")
+    grams = words + [a + b for a, b in zip(words, words[1:])] + [a + b + c for a, b, c in zip(words, words[1:], words[2:])]
+    targets = set()
+    for raw in names:                                # «Bc. Bc. PereBerezcik» — и целиком, и по словам
+        for part in [raw, *re.findall(r"[^\W_]+", raw or "")]:
+            if len(norm_name(part)) >= 3:
+                targets.add((norm_name(part), loose_name(part)))
+    for gram in grams:
+        g, gl = norm_name(gram), loose_name(gram)
+        if len(g) < 3:
+            continue
+        for name, loose in targets:
+            if g == name or gl == loose or stem(g) == stem(name) or stem(gl) == stem(loose):
+                return True
+            if len(root(gl)) >= 3 and root(gl) == root(loose):    # короткие имена в падеже: «Пете» → «Petya»
+                return True
+            if len(g) >= 5 and (g in name or gl in loose):
+                return True
+            if len(gl) >= 4 and difflib.SequenceMatcher(None, gl, loose).ratio() >= 0.8:
+                return True
+    return False
+
+
+def named_in(text: str, member) -> bool:
+    """Назван ли участник во фразе: @упоминанием, ID, ником, частью ника или прозвищем. Нужен, чтобы не верить
+    ИИ на слово, кого он выбрал: «забань подкидыша» не должно стать баном другого человека."""
+    if re.search(rf"<@!?{member.id}>", text or "") or str(member.id) in (text or ""):
+        return True
+    return said(text, names_of(member))
+
+
 class AmbiguousMember(commands.BadArgument):
     """Под имя подходят несколько участников — текст ошибки можно показать как есть."""
 

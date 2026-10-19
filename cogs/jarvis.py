@@ -29,7 +29,7 @@ from discord.ext.commands.view import StringView
 import ai
 import whatsnew
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
-from names import norm_name, all_aliases, find_member, name_score
+from names import norm_name, all_aliases, find_member, name_score, named_in, said
 from config import TTS_SETTINGS
 from data import player_funds, guild_config, save_guild_cfg
 from utils import parse_duration, fmt_duration, utcnow
@@ -77,6 +77,8 @@ PHRASES = {
                     "sk": "Vypínam počúvanie. Ahoj!", "en": "Stopping listening. Bye!"},
     "not_found":   {"ru": "Не нашёл участника {name}.", "uk": "Не знайшов учасника {name}.",
                     "sk": "Nenašiel som člena {name}.", "en": "I couldn't find {name}."},
+    "not_named":   {"ru": "Не понял, кого именно — назови по имени.", "uk": "Не зрозумів, кого саме — назви на ім'я.",
+                    "sk": "Nerozumel som, koho presne — povedz meno.", "en": "I didn't catch who exactly — say their name."},
     "ambiguous":   {"ru": "Не понял, кого именно: {name}?", "uk": "Не зрозумів, кого саме: {name}?",
                     "sk": "Nerozumiem, koho presne: {name}?", "en": "Who exactly: {name}?"},
     "missing":     {"ru": "Не понял {what}. Повтори, пожалуйста.", "uk": "Не зрозумів {what}. Повтори, будь ласка.",
@@ -883,10 +885,17 @@ class JarvisCog(commands.Cog):
             values = await self.convert(ctx, action, intent.args, lang, vc)
         except NotUnderstood as e:
             return await refuse(f"не разобраны параметры ({args_note(intent.args)})", str(e))
+        for p in action.params:                      # кого выбрал ИИ — должен быть назван во фразе
+            member = values.get(p.name) if p.kind == "member" else None
+            if (member is not None and member != user and not named_in(question, member)
+                    and not said(question, [str(intent.args.get(p.name) or "")])):   # «Васе» → ИИ: «Вася» → Vasyl
+                return await refuse(f"ИИ выбрал {member.display_name}, но во фразе его имени нет — переспрашиваю",
+                                    tr("not_named", lang))
         if action.hierarchy:
             from cogs.moderation import hierarchy_error
             if err := hierarchy_error(ctx, values["member"]):
-                return await refuse(f"иерархия ролей: {err}", err)
+                return await refuse(f"иерархия ролей ({values['member'].display_name}): {err}",
+                                    f"{values['member'].display_name} — {err[0].lower()}{err[1:]}")
         pending = Pending(user, channel, vc, action, values, self.shown(command, action, values),
                           question, source, lang, trace=self.shown(command, action, values, redact=True))
         needs = action.confirm(ctx, values) if callable(action.confirm) else action.confirm
