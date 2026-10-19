@@ -146,9 +146,71 @@ def plural(n: int) -> str:
     return "изменений"
 
 
+# ── Подборка к крупному обновлению (whatsnew_release.md) ─────
+RELEASE_FILE = os.path.join(ROOT, "whatsnew_release.md")
+RELEASE_MARK = "Обновление"
+
+
+def release(root: str = None) -> Optional[dict]:
+    """{id, pages: [(заголовок, текст)]} из whatsnew_release.md или None, если подборки нет."""
+    path = os.path.join(root, "whatsnew_release.md") if root else RELEASE_FILE
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = re.sub(r"<!--.*?-->", "", f.read(), flags=re.S)
+    except OSError:
+        return None
+    m = re.search(r"^id:\s*(\S+)", src, re.M)
+    pages = [(t.strip(), b.strip()[:4096]) for t, b in re.findall(r"^## (.+?)\s*$(.*?)(?=^## |\Z)", src, re.M | re.S)]
+    if not m or not pages:
+        return None
+    return {"id": m.group(1), "pages": pages}
+
+
+def release_key(gid: str) -> str:
+    return f"release:{gid}"
+
+
+def release_page(seen: dict, gid: str, rel: dict) -> Optional[int]:
+    """Какую страницу подборки показать серверу; None — подборку тут уже досмотрели."""
+    state = seen.get(release_key(gid))
+    if not isinstance(state, dict) or state.get("id") != rel["id"]:
+        return 0
+    if state.get("done"):
+        return None
+    page = state.get("page", 0)
+    return page if isinstance(page, int) and 0 <= page < len(rel["pages"]) else 0
+
+
+def release_commit(root: str = ROOT) -> Optional[str]:
+    """Последний коммит, менявший подборку: всё до него включительно подборка уже рассказала."""
+    if not os.path.exists(os.path.join(root, ".git")):
+        return None
+    try:
+        out = subprocess.run(["git", "-C", root, "log", "-1", "--format=%H", "--", "whatsnew_release.md"],
+                             capture_output=True, timeout=5, check=True).stdout.decode().strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out or None
+
+
+def release_embed(rel: dict, page: int) -> discord.Embed:
+    title, body = rel["pages"][page]
+    total = len(rel["pages"])
+    e = discord.Embed(title=title[:256], description=body or "—", color=COLOR)
+    head = f"🍻 {INTRO}" if page == 0 else f"🆕 {RELEASE_MARK}"
+    e.set_author(name=f"{head} · {page + 1}/{total}")
+    e.set_footer(text="Это всё! Дальше расскажу о новом, когда добавим." if page == total - 1 else
+                 "Дальше — кнопка ▶, «!чтонового далее» или «@BazarčikPM что ещё нового»")
+    return e
+
+
 def voice_text(snapshots) -> str:
     """Для голоса: вступление и только заголовки пунктов — описания длинные, их читают в чате."""
     embeds = [e for s in snapshots for e in s.embeds]
+    for e in embeds:                       # страница подборки: «вступление: заголовок» или просто заголовок
+        author = getattr(e.author, "name", None) or ""
+        if e.title and (INTRO in author or RELEASE_MARK in author):
+            return (f"{INTRO}: " if INTRO in author else "") + e.title + "."
     titles = [e.title.removeprefix(ITEM_MARK) for e in embeds if e.title and e.title.startswith(ITEM_MARK)]
     rest = next((m.group(1) for e in embeds if e.footer and e.footer.text
                  for m in [re.search(r"И ещё (\d+)", e.footer.text)] if m), None)

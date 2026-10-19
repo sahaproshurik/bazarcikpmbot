@@ -61,13 +61,22 @@ class InfoCog(commands.Cog):
 
     @commands.command(name="whatsnew", aliases=["чтонового", "обновления"],
                       brief="Чему бот научился: что добавили с прошлого раза",
-                      help="`!чтонового` — что добавили в бота с прошлого рассказа на этом сервере.\n"
-                           "`!чтонового все` — свежие обновления заново.\n"
-                           "Словами: «@BazarčikPM чему новому ты научился».")
+                      help="`!чтонового` — что добавили в бота с прошлого рассказа на этом сервере. После крупного "
+                           "обновления — подборка по одному сообщению: дальше — кнопка ▶ или `!чтонового далее`.\n"
+                           "`!чтонового все` — свежие обновления заново, `!чтонового подборка` — подборку с начала.\n"
+                           "Словами: «@BazarčikPM чему новому ты научился», «что ещё нового».")
     async def whatsnew_cmd(self, ctx, *, mode: str = ""):
-        items = await asyncio.to_thread(whatsnew.history)      # git log — не держим цикл событий
         gid = str(ctx.guild.id) if ctx.guild else "dm"
-        again = mode.strip().lower() in ("все", "всё", "all", "заново")
+        mode = mode.strip().lower()
+        rel = whatsnew.release()
+        if rel is not None and mode in ("подборка", "сначала", "release"):
+            whatsnew_seen.pop(whatsnew.release_key(gid), None)
+        if rel is not None and mode not in ("все", "всё", "all", "заново"):
+            page = whatsnew.release_page(whatsnew_seen, gid, rel)
+            if page is not None:                              # подборка к обновлению — по странице на вопрос
+                return await show_release(gid, rel, page, ctx.send)
+        items = await asyncio.to_thread(whatsnew.history)      # git log — не держим цикл событий
+        again = mode in ("все", "всё", "all", "заново")
         new = whatsnew.pick_new(items, None if again else whatsnew_seen.get(gid))
         shown, rest = whatsnew.batch(new)
         for embed in whatsnew.embeds_for(shown, items, rest):    # каждое изменение — своим сообщением
@@ -103,6 +112,60 @@ class InfoCog(commands.Cog):
             for c, d in cmds:
                 embed.add_field(name=f"`{c}`", value=d, inline=False)
             await ctx.send(embed=embed)
+
+
+async def show_release(gid: str, rel: dict, page: int, send):
+    """Страница подборки к обновлению; под ней — «▶ Далее», на последней — подборка досмотрена:
+    коммиты, о которых она рассказала, считаются рассказанными, дальше — только новые."""
+    last = page == len(rel["pages"]) - 1
+    view = None if last else ReleaseView(gid, rel, page + 2)
+    message = await send(embed=whatsnew.release_embed(rel, page), view=view)
+    if view is not None:
+        view.message = message
+    key = whatsnew.release_key(gid)
+    if last:
+        whatsnew_seen[key] = {"id": rel["id"], "done": True}
+        covered = await asyncio.to_thread(whatsnew.release_commit)
+        if covered is None:                                  # без git — по последнему разделу CHANGES.md
+            items = await asyncio.to_thread(whatsnew.history)
+            covered = items[0]["id"] if items else None
+        if covered:
+            whatsnew_seen[gid] = covered
+    else:
+        whatsnew_seen[key] = {"id": rel["id"], "page": page + 1, "done": False}
+    save_whatsnew()
+    print(f"[whatsnew] {gid}: подборка {rel['id']} — {page + 1}/{len(rel['pages'])}"
+          + (" (досмотрена)" if last else ""))
+
+
+class ReleaseView(discord.ui.View):
+    """«▶ Далее» под страницей подборки — жмёт любой: подборка общая для сервера."""
+
+    def __init__(self, gid: str, rel: dict, number: int):
+        super().__init__(timeout=15 * 60)
+        self.gid, self.rel, self.message, self.used = gid, rel, None, False
+        button = discord.ui.Button(label=f"Далее ({number}/{len(rel['pages'])})", emoji="▶️",
+                                   style=discord.ButtonStyle.primary)
+        button.callback = self._next
+        self.add_item(button)
+
+    async def _next(self, interaction: discord.Interaction):
+        page = whatsnew.release_page(whatsnew_seen, self.gid, self.rel)
+        if self.used or page is None:
+            await interaction.response.send_message("Подборку уже досмотрели — дальше расскажу о новом, "
+                                                    "когда добавим.", ephemeral=True)
+            return
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(view=None)
+        await show_release(self.gid, self.rel, page, interaction.channel.send)
+
+    async def on_timeout(self):
+        if self.message is not None and not self.used:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
 
 
 def setup(bot):
