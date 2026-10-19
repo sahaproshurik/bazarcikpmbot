@@ -1,13 +1,16 @@
 """
 games.py — казино BAZARCIK: слоты, рулетка, монетка, кубик и блэкджек.
 
-Каждая игра — одно сообщение с анимацией и кнопками «Ещё раз / ×2 / ½».
-Ставка: число, 5k, 1.5m, all (ва-банк) или half (половина наличных).
+Каждая игра — одно сообщение с анимацией и кнопками «Ещё раз / ×2 / ½ / Игры».
+Ставка: число, 5k, 1.5m, all (ва-банк) или half (половина наличных). Без ставки — кнопки выбора ставки.
+!игры — меню всех игр кнопками (казино и «Дурак»), команды писать не нужно.
 Выигрыш: +10% с 🍀 Амулетом удачи, налог 18% с прибыли выше TAX_THRESHOLD — одинаково во всех играх.
 """
 import asyncio
 import random
+from typing import Optional
 import discord
+from discord.ui import Modal, InputText
 from discord.ext import commands
 from data import (
     player_funds, player_inventory, casino_stats, REDS, TAX_THRESHOLD, card_values, suits,
@@ -34,23 +37,30 @@ ROULETTE_ALIASES = {"red": "red", "красное": "red", "к": "red",
 
 
 # ── Ставки и расчёт ───────────────────────────────────────────
+def parse_bet(argument: str, cash: int) -> int:
+    """Ставка: 500, 5k, 1.5m, all/всё, half/половина. Не число — ValueError."""
+    a = argument.lower().replace(" ", "").replace("_", "")
+    if a in ("all", "allin", "всё", "все", "вабанк", "ва-банк"):
+        return cash
+    if a in ("half", "половина", "пол"):
+        return cash // 2
+    mult = 1
+    if a[-1:] in ("k", "к"):
+        mult, a = 1_000, a[:-1]
+    elif a[-1:] in ("m", "м"):
+        mult, a = 1_000_000, a[:-1]
+    try:
+        return int(float(a.replace(",", ".")) * mult)
+    except OverflowError:
+        raise ValueError(argument)
+
+
 class Bet(commands.Converter):
     """Ставка: 500, 5k, 1.5m, all/всё, half/половина."""
     async def convert(self, ctx, argument: str) -> int:
-        a = argument.lower().replace(" ", "").replace("_", "")
-        cash = player_funds.get(str(ctx.author.id), 0)
-        if a in ("all", "allin", "всё", "все", "вабанк", "ва-банк"):
-            return cash
-        if a in ("half", "половина", "пол"):
-            return cash // 2
-        mult = 1
-        if a[-1:] in ("k", "к"):
-            mult, a = 1_000, a[:-1]
-        elif a[-1:] in ("m", "м"):
-            mult, a = 1_000_000, a[:-1]
         try:
-            return int(float(a.replace(",", ".")) * mult)
-        except (ValueError, OverflowError):
+            return parse_bet(argument, player_funds.get(str(ctx.author.id), 0))
+        except ValueError:
             raise commands.BadArgument(f"Ставка `{argument}` — не число. Примеры: 500, 5k, all, half")
 
 
@@ -162,6 +172,15 @@ class ReplayView(OwnedView):
         self.btn(f"×2 · {bet * 2:,}", self._again(bet * 2), BLUE, emoji="⏫")
         if bet >= 2:
             self.btn(f"½ · {bet // 2:,}", self._again(bet // 2), GREY, emoji="⏬")
+        self.btn("Игры", self._hub, GREY, emoji="🎮")
+
+    async def _hub(self, interaction: discord.Interaction):
+        if self.used:
+            await interaction.response.defer()
+            return
+        self.used = True
+        self.stop()
+        await show_hub(Table.from_interaction(interaction, self.user))
 
     def _again(self, bet: int):
         async def cb(interaction: discord.Interaction):
@@ -209,6 +228,59 @@ class ChoiceView(OwnedView):
             try:
                 await self.message.edit(content="⌛ Время на выбор вышло — ставка не списана.",
                                         embed=None, view=None)
+            except discord.HTTPException:
+                pass
+
+
+class BetModal(Modal):
+    def __init__(self, picker: "BetPicker"):
+        super().__init__(title="Своя ставка")
+        self.picker = picker
+        self.add_item(InputText(label="Ставка", placeholder="например 2500, 10k, all, half", max_length=20))
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            bet = parse_bet(self.children[0].value or "", balance(self.picker.uid))
+        except ValueError:
+            await interaction.response.send_message("❌ Не понял ставку. Примеры: 2500, 10k, all, half",
+                                                    ephemeral=True)
+            return
+        await self.picker.pick(bet, interaction)
+
+
+class BetPicker(OwnedView):
+    """Ставка кнопками: 100 / 500 / 1k / 5k / ½ / ва-банк / своя."""
+
+    def __init__(self, user, on_bet):
+        super().__init__(user, timeout=90)
+        self.on_bet, self.used = on_bet, False
+        cash = balance(self.uid)
+        for amount in (100, 500, 1_000, 5_000):
+            self.btn(f"{amount:,}", self._fixed(amount), GREEN, row=0, emoji="💰", disabled=amount > cash)
+        self.btn(f"½ · {cash // 2:,}", self._fixed(cash // 2), BLUE, row=1, emoji="⏬", disabled=cash < 2)
+        self.btn(f"Ва-банк · {cash:,}", self._fixed(cash), RED, row=1, emoji="🔥", disabled=cash <= 0)
+        self.btn("Своя", self._custom, GREY, row=1, emoji="✏️", disabled=cash <= 0)
+
+    def _fixed(self, bet: int):
+        async def cb(interaction: discord.Interaction):
+            await self.pick(bet, interaction)
+        return cb
+
+    async def _custom(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BetModal(self))
+
+    async def pick(self, bet: int, interaction: discord.Interaction):
+        if self.used:
+            await interaction.response.defer()
+            return
+        self.used = True
+        self.stop()
+        await self.on_bet(bet, interaction)
+
+    async def on_timeout(self):
+        if self.message is not None and not self.used:
+            try:
+                await self.message.edit(content="⌛ Ставку так и не выбрали.", embed=None, view=None)
             except discord.HTTPException:
                 pass
 
@@ -438,38 +510,151 @@ async def play_blackjack(table: Table, bet: int):
     await BlackjackView(table, bet).start()
 
 
+# ── Запуск без команд: ставка и выбор — кнопками ──────────────
+def flip_options():
+    return [(name, emoji, side, BLUE, None) for side, (name, emoji) in COIN.items()]
+
+
+def dice_options():
+    return [(str(n), DICE_FACES[n], n, BLUE, (n - 1) // 3) for n in range(1, 7)]
+
+
+def roulette_options():
+    return [(f"{name} ×{mult}", emoji, key, GREEN if key == "green" else GREY, None)
+            for key, (name, emoji, mult) in ROULETTE_BETS.items()]
+
+
+# ключ → (название, игра, кнопки выбора или None, вопрос выбора)
+CASINO_GAMES = {
+    "spin":     ("🎰 Слоты", play_slots, None, ""),
+    "flip":     ("🪙 Монетка", play_flip, flip_options, "орёл или решка?"),
+    "dice":     ("🎲 Кубик", play_dice, dice_options, "какое число выпадет?"),
+    "roulette": ("🎡 Рулетка", play_roulette, roulette_options, "на что ставишь? На число: `!roulette 500 17`"),
+    "bj":       ("🃏 Блэкджек", play_blackjack, None, ""),
+}
+
+
+async def launch(table: Table, key: str, bet: int = None, choice=None):
+    """Игра казино в сообщении table: нет ставки — кнопки ставок, нет выбора — кнопки выбора."""
+    title, game, options, question = CASINO_GAMES[key]
+    user = table.user
+
+    async def with_bet(b, interaction):
+        await launch(Table.from_interaction(interaction, user), key, b, choice)
+
+    if bet is None:
+        await table.show(table_embed(title, user, f"Какая ставка? На руках **{balance(table.uid):,}** 💰"),
+                         BetPicker(user, with_bet))
+        return
+    err = bet_error(table.uid, bet)
+    if err:
+        await table.show(table_embed(title, user, f"❌ {user.mention}, {err}\nВыбери другую ставку:", LOSE),
+                         BetPicker(user, with_bet))
+        return
+    if options is not None and choice is None:
+        async def chose(value, interaction):
+            await game(Table.from_interaction(interaction, user), bet, value)
+        await table.show(table_embed(title, user, f"Ставка **{bet:,}** 💰 — {question}"),
+                         ChoiceView(user, options(), chose))
+        return
+    if options is None:
+        await game(table, bet)
+    else:
+        await game(table, bet, choice)
+
+
+class HubView(OwnedView):
+    """!игры — все игры кнопками."""
+    deny_text = "Это не твоё меню — открой своё: `!игры`"
+
+    def __init__(self, user):
+        super().__init__(user, timeout=180)
+        self.used = False
+        for n, (key, (title, *_)) in enumerate(CASINO_GAMES.items()):
+            emoji, name = title.split(" ", 1)
+            self.btn(name, self._casino(key), BLUE, row=n // 3, emoji=emoji)
+        self.btn("Дурак", self._durak, GREEN, row=1, emoji="🂡")
+
+    def _casino(self, key: str):
+        async def cb(interaction: discord.Interaction):
+            if self.used:
+                await interaction.response.defer()
+                return
+            self.used = True
+            self.stop()
+            await launch(Table.from_interaction(interaction, self.user), key)
+        return cb
+
+    async def _durak(self, interaction: discord.Interaction):
+        cog = interaction.client.get_cog("DurakCog")
+        if cog is None:
+            await interaction.response.send_message("Дурак сейчас недоступен.", ephemeral=True)
+            return
+        from cogs.durak import parse_options
+        err = await cog.open_lobby(interaction.channel, self.user, parse_options(""))
+        if err:
+            await interaction.response.send_message(f"❌ {err.capitalize()}.", ephemeral=True)
+            return
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(
+            embed=table_embed("🎮 Игры", self.user, "🂡 Открыт набор в «Дурака» — сообщение ниже."), view=None)
+
+    async def on_timeout(self):
+        if self.message is not None and not self.used:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
+def hub_embed(user) -> discord.Embed:
+    e = table_embed("🎮 Игры", user, "Выбери игру — ставку и остальное спрошу кнопками.\n"
+                                     f"На руках: **{balance(str(user.id)):,}** 💰")
+    e.add_field(name="Казино", inline=False, value=(
+        "🎰 Слоты — три в ряд ×5, пара ×2\n🪙 Монетка — ×2\n🎲 Кубик — ×5\n"
+        "🎡 Рулетка — цвет ×2, зеро ×14\n🃏 Блэкджек — ×2, блэкджек ×3"))
+    e.add_field(name="С друзьями", inline=False, value=(
+        "🂡 Дурак — подкидной или переводной, 24/36/52 карты, можно с ботом"))
+    e.set_footer(text="Можно и словами: «Базарчик, давай в дурака», «@бот сыграем в слоты»")
+    return e
+
+
+async def show_hub(table: Table):
+    await table.show(hub_embed(table.user), HubView(table.user))
+
+
 # ── Cog ───────────────────────────────────────────────────────
 class GamesCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def ready_bet(self, ctx, bet: int) -> bool:
+    async def play(self, ctx, key: str, bet=None, choice=None):
         await init_player(self.bot, ctx)
-        err = bet_error(str(ctx.author.id), bet)
-        if err:
-            await ctx.send(f"❌ {ctx.author.mention}, {err}", delete_after=6)
-            return False
-        return True
+        await launch(Table(ctx.channel, ctx.author), key, bet, choice)
 
-    async def ask_choice(self, ctx, title: str, text: str, options: list, game, bet: int):
-        async def on_pick(value, interaction):
-            await game(Table.from_interaction(interaction, ctx.author), bet, value)
-        view = ChoiceView(ctx.author, options, on_pick)
-        await ctx.send(embed=table_embed(title, ctx.author, text), view=view)
+    @commands.command(name="games", aliases=["игры", "game", "игра"], brief="Все игры кнопками",
+                      help="`!игры` — меню игр: слоты, монетка, кубик, рулетка, блэкджек, дурак. "
+                           "Ставку и выбор бот спросит кнопками.")
+    async def games_hub(self, ctx):
+        await init_player(self.bot, ctx)
+        await show_hub(Table(ctx.channel, ctx.author))
 
     @commands.command(name="casino", aliases=["казино"], brief="Казино: игры, выплаты и твоя статистика")
     async def casino(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         uid = str(member.id)
         e = discord.Embed(title="🎰 Казино BAZARCIK", color=CASINO_COLOR,
-                          description="Ставка: число, `5k`, `1.5m`, `all` (ва-банк) или `half` (половина).\n"
-                                      "После игры — кнопки **🔁 Ещё раз**, **⏫ ×2** и **⏬ ½**.")
+                          description="Ставка: число, `5k`, `1.5m`, `all` (ва-банк) или `half` (половина). "
+                                      "Без ставки бот предложит кнопки, а `!игры` — меню всех игр.\n"
+                                      "После игры — кнопки **🔁 Ещё раз**, **⏫ ×2**, **⏬ ½** и **🎮 Игры**.")
         e.add_field(name="Игры", inline=False, value=(
-            "`!spin ставка` — слоты: три в ряд ×5, пара ×2\n"
-            "`!roulette ставка [red|black|green|0-36]` — ×2 / ×14 / ×35\n"
-            "`!flip ставка [о|р]` — монетка ×2\n"
-            "`!dice ставка [1-6]` — кубик ×5\n"
-            "`!bj ставка` — блэкджек: победа ×2, блэкджек ×3, можно удвоить"))
+            "`!spin [ставка]` — слоты: три в ряд ×5, пара ×2\n"
+            "`!roulette [ставка] [red|black|green|0-36]` — ×2 / ×14 / ×35\n"
+            "`!flip [ставка] [о|р]` — монетка ×2\n"
+            "`!dice [ставка] [1-6]` — кубик ×5\n"
+            "`!bj [ставка]` — блэкджек: победа ×2, блэкджек ×3, можно удвоить\n"
+            "`!дурак` — карты с друзьями или ботом"))
         e.add_field(name="Правила", inline=False, value=(
             f"🍀 Амулет удачи (`!buy lucky_charm`): +10% к выигрышу — "
             f"{'**есть** ✅' if has_charm(uid) else 'нет'}\n"
@@ -483,70 +668,50 @@ class GamesCog(commands.Cog):
         e.set_thumbnail(url=member.display_avatar.url)
         await ctx.send(embed=e)
 
-    @commands.command(name="spin", brief="Слоты",
-                      help="`!spin ставка` — три барабана. Три в ряд — ×5, два одинаковых — ×2.\n"
-                           "Ставка: число, 5k, all, half. Правила и статистика: `!casino`")
-    async def spin(self, ctx, bet: Bet):
-        if await self.ready_bet(ctx, bet):
-            await play_slots(Table(ctx.channel, ctx.author), bet)
+    @commands.command(name="spin", aliases=["слоты"], brief="Слоты",
+                      help="`!spin [ставка]` — три барабана. Три в ряд — ×5, два одинаковых — ×2.\n"
+                           "Ставка: число, 5k, all, half; без неё — кнопки. Правила и статистика: `!casino`")
+    async def spin(self, ctx, bet: Optional[Bet] = None):
+        await self.play(ctx, "spin", bet)
 
-    @commands.command(name="flip", brief="Монетка: орёл или решка",
-                      help="`!flip ставка [о|р]` — угадал сторону: ×2. Без выбора бот предложит кнопки.")
-    async def flip(self, ctx, bet: Bet, choice: str = None):
-        if not await self.ready_bet(ctx, bet):
-            return
-        if choice is None:
-            options = [(name, emoji, side, BLUE, None) for side, (name, emoji) in COIN.items()]
-            await self.ask_choice(ctx, "🪙 Монетка", f"Ставка **{bet:,}** 💰 — орёл или решка?", options, play_flip, bet)
-            return
-        side = COIN_ALIASES.get(choice.strip().lower())
-        if side is None:
-            await ctx.send("❌ Выбери **о** (орёл) или **р** (решка).", delete_after=6)
-            return
-        await play_flip(Table(ctx.channel, ctx.author), bet, side)
+    @commands.command(name="flip", aliases=["монетка"], brief="Монетка: орёл или решка",
+                      help="`!flip [ставка] [о|р]` — угадал сторону: ×2. Чего не указал — бот спросит кнопками.")
+    async def flip(self, ctx, bet: Optional[Bet] = None, choice: str = None):
+        side = None
+        if choice is not None:
+            side = COIN_ALIASES.get(choice.strip().lower())
+            if side is None:
+                await ctx.send("❌ Выбери **о** (орёл) или **р** (решка).", delete_after=6)
+                return
+        await self.play(ctx, "flip", bet, side)
 
-    @commands.command(name="dice", brief="Кубик: угадай число",
-                      help="`!dice ставка [1-6]` — угадал число: ×5. Без числа бот предложит кнопки.")
-    async def dice_game(self, ctx, bet: Bet, number: int = None):
-        if not await self.ready_bet(ctx, bet):
-            return
-        if number is None:
-            options = [(str(n), DICE_FACES[n], n, BLUE, (n - 1) // 3) for n in range(1, 7)]
-            await self.ask_choice(ctx, "🎲 Кубик", f"Ставка **{bet:,}** 💰 — какое число выпадет?",
-                                  options, play_dice, bet)
-            return
-        if not 1 <= number <= 6:
+    @commands.command(name="dice", aliases=["кубик"], brief="Кубик: угадай число",
+                      help="`!dice [ставка] [1-6]` — угадал число: ×5. Чего не указал — бот спросит кнопками.")
+    async def dice_game(self, ctx, bet: Optional[Bet] = None, number: int = None):
+        if number is not None and not 1 <= number <= 6:
             await ctx.send("❌ Число от 1 до 6!", delete_after=6)
             return
-        await play_dice(Table(ctx.channel, ctx.author), bet, number)
+        await self.play(ctx, "dice", bet, number)
 
-    @commands.command(name="roulette", brief="Рулетка",
-                      help="`!roulette ставка [red|black|green|0-36]` — цвет ×2, зеро ×14, число ×35.\n"
-                           "Без выбора бот предложит кнопки цветов.")
-    async def roulette(self, ctx, bet: Bet, choice: str = None):
-        if not await self.ready_bet(ctx, bet):
-            return
-        if choice is None:
-            options = [(f"{name} ×{mult}", emoji, key, GREEN if key == "green" else GREY, None)
-                       for key, (name, emoji, mult) in ROULETTE_BETS.items()]
-            await self.ask_choice(ctx, "🎡 Рулетка", f"Ставка **{bet:,}** 💰 — на что ставишь?\n"
-                                  f"На число: `!roulette {bet} 17`", options, play_roulette, bet)
-            return
-        ch = choice.strip().lower()
-        key = ROULETTE_ALIASES.get(ch) or (ch if ch.isdigit() and 0 <= int(ch) <= 36 else None)
-        if key is None:
-            await ctx.send("❌ Выбор: red / black / green / число 0-36", delete_after=6)
-            return
-        await play_roulette(Table(ctx.channel, ctx.author), bet, key)
+    @commands.command(name="roulette", aliases=["рулетка"], brief="Рулетка",
+                      help="`!roulette [ставка] [red|black|green|0-36]` — цвет ×2, зеро ×14, число ×35.\n"
+                           "Чего не указал — бот спросит кнопками.")
+    async def roulette(self, ctx, bet: Optional[Bet] = None, choice: str = None):
+        key = None
+        if choice is not None:
+            ch = choice.strip().lower()
+            key = ROULETTE_ALIASES.get(ch) or (ch if ch.isdigit() and 0 <= int(ch) <= 36 else None)
+            if key is None:
+                await ctx.send("❌ Выбор: red / black / green / число 0-36", delete_after=6)
+                return
+        await self.play(ctx, "roulette", bet, key)
 
-    @commands.command(name="bj", brief="Блэкджек",
-                      help="`!bj ставка` — набери больше дилера, но не больше 21.\n"
+    @commands.command(name="bj", aliases=["блэкджек", "blackjack"], brief="Блэкджек",
+                      help="`!bj [ставка]` — набери больше дилера, но не больше 21.\n"
                            "Кнопки: 🃏 ещё карту, ✋ хватит, 💰 удвоить (одна карта и двойная ставка).\n"
                            "Победа ×2, блэкджек с раздачи ×3, ничья — ставка возвращается.")
-    async def blackjack(self, ctx, bet: Bet):
-        if await self.ready_bet(ctx, bet):
-            await play_blackjack(Table(ctx.channel, ctx.author), bet)
-
+    async def blackjack(self, ctx, bet: Optional[Bet] = None):
+        await self.play(ctx, "bj", bet)
 
 def setup(bot):
     bot.add_cog(GamesCog(bot))

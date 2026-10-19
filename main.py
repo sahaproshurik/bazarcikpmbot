@@ -26,6 +26,7 @@ COGS = [
     "cogs.economy",
     "cogs.shop",
     "cogs.games",
+    "cogs.durak",
     "cogs.work",
     "cogs.mcdonalds",
     "cogs.business",
@@ -39,7 +40,7 @@ COGS = [
     "cogs.voice_listen",
     "cogs.aliases",
     "cogs.jarvis",
-    "cogs.mafia",
+    # "cogs.mafia" — отключена, код оставлен в cogs/mafia.py
     "cogs.spt_status",
 ]
 

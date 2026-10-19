@@ -186,8 +186,19 @@ def clear_call(values: dict, guild):
 
 
 def big_bet(ctx, values) -> bool:
-    bet, cash = values["bet"], player_funds.get(str(ctx.author.id), 0)
-    return BIG_BET_MIN <= bet <= cash and bet * 2 >= cash
+    bet, cash = values.get("bet"), player_funds.get(str(ctx.author.id), 0)
+    return bet is not None and BIG_BET_MIN <= bet <= cash and bet * 2 >= cash
+
+
+def durak_call(values: dict, guild):
+    """Параметры дурака от ИИ → строка опций для !дурак. С ботами начинаем сразу — ждать некого."""
+    parts = [values[k] for k in ("mode", "throwers", "deck") if values.get(k)]
+    if values.get("stake"):
+        parts.append(str(values["stake"]))
+    if values.get("bots"):
+        parts += [f"{values['bots']} бот", "сразу"]
+    options = " ".join(parts)
+    return [], {"options": options}, options
 
 
 BET_ASK = {"ru": "Ставка {bet}, это половина твоих наличных или больше. Играем",
@@ -195,8 +206,9 @@ BET_ASK = {"ru": "Ставка {bet}, это половина твоих нал�
            "sk": "Stávka {bet} je polovica tvojej hotovosti alebo viac. Hráme",
            "en": "A bet of {bet} is half your cash or more. Play"}
 MEMBER_OPT = P("member", "member", required=False)
+BET_OPT = P("bet", "bet", required=False)               # без ставки игра сама предложит кнопки
 REASON = P("reason", "text", required=False, kw="reason")
-ECO, INFO, CASINO, WORK, FUN, VOICE, MOD = ("💰 Экономика", "👤 Профиль и сервер", "🎰 Казино",
+ECO, INFO, CASINO, WORK, FUN, VOICE, MOD = ("💰 Экономика", "👤 Профиль и сервер", "🎰 Игры и казино",
                                            "💼 Работа и заработок", "🎭 Развлечения", "🎙️ Голос и ИИ",
                                            "🛡️ Модерация")
 STATIONS = ("зал", "касса", "фри", "выдача", "сборка", "макавто", "гриль")
@@ -223,20 +235,30 @@ ACTIONS = [
     Action("inventory", "inventory", "инвентарь", "что у меня в инвентаре", INFO, (MEMBER_OPT,)),
     Action("warns", "warns", "посмотреть предупреждения", "сколько варнов у Пети", INFO, (MEMBER_OPT,)),
 
+    Action("games", "games", "меню всех игр кнопками: во что поиграть, покажи игры", "во что можно поиграть", CASINO),
     Action("casino", "casino", "правила казино и статистика игр", "моя статистика в казино", CASINO, (MEMBER_OPT,)),
-    Action("slots", "spin", "сыграть в слоты", "крутани слоты на сотку", CASINO,
-           (P("bet", "bet"),), confirm=big_bet, ask=BET_ASK),
+    Action("slots", "spin", "сыграть в слоты (ставку не назвали — бот предложит кнопки)", "крутани слоты на сотку",
+           CASINO, (BET_OPT,), confirm=big_bet, ask=BET_ASK),
     Action("flip", "flip", "монетка на деньги, side: heads (орёл) или tails (решка)", "ставлю двести на орла", CASINO,
-           (P("bet", "bet"), P("side", "choice", required=False, choices=("heads", "tails"))),
+           (BET_OPT, P("side", "choice", required=False, choices=("heads", "tails"))),
            confirm=big_bet, ask=BET_ASK),
     Action("dice", "dice", "кубик на деньги, number: 1–6", "кубик на пятьсот, ставлю на шесть", CASINO,
-           (P("bet", "bet"), P("number", "number", required=False)), confirm=big_bet, ask=BET_ASK),
+           (BET_OPT, P("number", "number", required=False)), confirm=big_bet, ask=BET_ASK),
     Action("roulette", "roulette", "рулетка, choice: red, black, green или число 0–36", "рулетка, тысяча на красное",
-           CASINO, (P("bet", "bet"), P("choice", "choice", required=False,
-                                       choices=("red", "black", "green", *map(str, range(37))))),
+           CASINO, (BET_OPT, P("choice", "choice", required=False,
+                               choices=("red", "black", "green", *map(str, range(37))))),
            confirm=big_bet, ask=BET_ASK),
     Action("blackjack", "bj", "блэкджек", "сыграем в блэкджек на тысячу", CASINO,
-           (P("bet", "bet"),), confirm=big_bet, ask=BET_ASK),
+           (BET_OPT,), confirm=big_bet, ask=BET_ASK),
+    Action("durak", "durak", "карточная игра «дурак»: открыть набор за столом. mode: throw (подкидной) или "
+           "transfer (переводной); throwers: neighbors (подкидывают соседи) или all (подкидывают все); "
+           "deck: 24 (короткая, от девятки), 36 (обычная) или 52 (полная); stake — ставка; bots — сколько ботов "
+           "(«с ботом» = 1)", "давай в переводного дурака с ботом", CASINO,
+           (P("mode", "choice", required=False, choices=("throw", "transfer")),
+            P("throwers", "choice", required=False, choices=("neighbors", "all")),
+            P("deck", "choice", required=False, choices=("24", "36", "52")),
+            P("stake", "amount", required=False), P("bots", "number", required=False)),
+           build=lambda values, guild: durak_call(values, guild)),
 
     Action("warehouse", "gb", "смена на складе GymBeam, job: pick (пикинг) или pack (упаковка)",
            "начни смену на складе", WORK, (P("job", "choice", required=False, choices=("pick", "pack")),)),
