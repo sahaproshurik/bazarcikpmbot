@@ -294,6 +294,10 @@ ACTIONS = [
     Action("stop_listening", "stoplisten", "перестать слушать войс, уйти из войса", "хватит слушать", VOICE),
     Action("voice", "aivoice", "сменить голос озвучки, voice: male или female", "говори мужским голосом", VOICE,
            (P("voice", "choice", kw="voice_name", choices=("male", "female")),)),
+    Action("listen_lang", "listenlang", "на каком языке бот слушает войс и голосовые, language: ru, uk, sk или en; "
+           "без language — показать текущий: «слушай нас на словацком», «переключи прослушку на английский», «на "
+           "каком языке ты слушаешь»", "слушай нас на словацком", VOICE,
+           (P("language", "choice", required=False, kw="language", choices=("ru", "uk", "sk", "en")),)),
     Action("forget", "aiclear", "очистить память разговора ИИ", "забудь наш разговор", VOICE),
     Action("reply_mode", "mode", "режим, в котором бот отвечает человеку: mode — standard (обычный, на языке "
            "собеседника), admin («язык админов», транслит латиницей) или yurchik (в манере Юрчика); member — кому "
@@ -760,9 +764,11 @@ class JarvisCog(commands.Cog):
         self._locks = defaultdict(asyncio.Lock)
 
     # ── Вход из voice_listen ──────────────────────────────────
-    async def handle(self, channel, user, question: str, vc=None, source: str = "", message=None) -> bool:
+    async def handle(self, channel, user, question: str, vc=None, source: str = "", message=None,
+                     lang: str = None) -> bool:
         """True — фраза была командой (и уже обработана), False — пусть отвечает обычный ИИ.
-        message — сообщение чата с @упоминанием: по нему видно, говорят ли о боте в третьем лице."""
+        message — сообщение чата с @упоминанием: по нему видно, говорят ли о боте в третьем лице.
+        lang — язык прослушки (!язык) для фраз голосом: на нём бот и отвечает, ИИ язык не угадывает."""
         pending = self.pending.get((channel.guild.id, user.id))
         if pending is not None and not pending.done:
             if not pending.ready:
@@ -791,6 +797,8 @@ class JarvisCog(commands.Cog):
             print(f"[jarvis] {user.display_name}: разбор фразы не удался ({e}) — отвечает обычный ИИ")
             return False
         took = time.monotonic() - started
+        if lang:
+            intent.lang = lang
         if intent.action == "aside":
             mode = aside_mode(channel.guild.id) if message is not None else "answer"
             if mode == "ignore":

@@ -8,6 +8,7 @@ voice_listen.py — бот слушает войс и отвечает голо�
 Звук живёт только в памяти до распознавания и сразу удаляется; фразы без обращения никуда не пишутся.
 
 Запасной путь — голосовое сообщение в чате, которое начинается с «Базарчик, …»: бот ответит так же.
+Слушает бот один язык сервера (!язык: русский, украинский, словацкий или английский) — Whisper не угадывает язык.
 Discord шифрует голос (DAVE), и py-cord пока помечает приём голоса как нестабильный,
 а голосовые сообщения работают всегда.
 """
@@ -28,6 +29,7 @@ import ai
 import diag
 import wake_word
 from cogs.voice_ai import say, answer_embed
+from data import guild_config, save_guild_cfg
 
 try:
     import davey
@@ -84,8 +86,19 @@ READY_QUICK_SEC = 3          # готов быстрее — одно сообщ
 READY_NOTE_SEC  = 20         # детектор всё ещё грузится — говорим «готов», а фразы пока распознаёт Whisper
 READY_LATER     = "⏳ Напишу здесь, когда буду готов слушать."
 WAKE_HINT       = "Базарчик, BazarčikPM"
-LANG_PRIORITY   = {"uk": 0, "ru": 1, "sk": 2, "en": 2}  # меньше — важнее: укр → рус → словацкий = английский
-LANG_MARGIN     = 0.15       # фора по уверенности Whisper (avg_logprob) за каждую ступень приоритета
+# Язык, который бот слушает (!язык) — один на сервер. Whisper получает его сам, а не угадывает: на коротких
+# фразах угадывание путало русский с английским, словацкий с чешским и стоило до трёх запросов на фразу.
+LISTEN_LANGS    = {"ru": "🇷🇺 русский", "uk": "🇺🇦 украинский", "sk": "🇸🇰 словацкий", "en": "🇬🇧 английский"}
+LANG_WORDS      = {
+    "ru": {"ru", "rus", "russian", "рус", "русский", "русском", "русский язык", "російська", "ruština", "rusky"},
+    "uk": {"uk", "ua", "ukr", "ukrainian", "укр", "украинский", "украинском", "українська", "українською",
+           "украинская", "ukrajinčina", "ukrajinsky"},
+    "sk": {"sk", "svk", "slovak", "словацкий", "словацком", "словацька", "словацькою", "slovenčina", "slovensky",
+           "slovencina"},
+    "en": {"en", "eng", "english", "англ", "английский", "английском", "англійська", "англійською", "angličtina",
+           "anglicky"},
+}
+DEFAULT_LANG    = "ru"
 WAKE_RE = re.compile(
     r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р\s?ч\w*|baz[aá]r\s?[cč]h?\w*)[\s,.!?:;…—-]*",
     re.IGNORECASE)
@@ -97,64 +110,34 @@ def split_wake(text: str):
     return None if m is None else text[m.end():].strip()
 
 
-def script_langs(text: str) -> tuple:
-    """Языки, из которых выбираем по алфавиту фразы: кириллица — укр/рус, латиница — словацкий/английский."""
-    letters = [c for c in text.lower() if c.isalpha()]
-    cyrillic = sum("а" <= c <= "я" or c in "ёіїєґ" for c in letters)
-    return ("uk", "ru") if letters and cyrillic * 2 >= len(letters) else ("sk", "en")
+def listen_lang(guild_id) -> str:
+    """Язык, который бот слушает на сервере. Хранится в guild_config: {"guild_id": {"listen_lang": "sk"}}."""
+    lang = guild_config.get(str(guild_id), {}).get("listen_lang", DEFAULT_LANG)
+    return lang if lang in LISTEN_LANGS else DEFAULT_LANG
 
 
-def lang_rank(heard: ai.Transcript) -> float:
-    """Уверенность Whisper со штрафом за низкий приоритет языка: больше — лучше."""
-    score = heard.score if heard.score is not None else -1.0
-    return score - LANG_MARGIN * LANG_PRIORITY.get(heard.lang, 3)
+def set_listen_lang(guild_id, lang: str):
+    guild_config.setdefault(str(guild_id), {})["listen_lang"] = lang
+    save_guild_cfg()
 
 
-async def recheck_language(audio: bytes, filename: str, heard: ai.Transcript, allowed=lambda: True):
-    """Whisper сам угадывает язык и на коротких фразах путает украинский с русским, словацкий с чешским.
-    Если он выбрал язык ниже по приоритету или вне списка, распознаём фразу ещё раз на более важных
-    языках того же алфавита и берём лучший вариант с учётом приоритета. allowed() — лимит распознаваний."""
-    level = LANG_PRIORITY.get(heard.lang, 3)
-    best = heard
-    for lang in script_langs(heard.text):
-        if LANG_PRIORITY[lang] >= level or not allowed():
-            continue
-        try:
-            other = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
-        except ai.AIError as e:
-            print(f"[listen] Перепроверка на языке {lang} не удалась: {e}")
-            continue
-        if other.text and lang_rank(other) > lang_rank(best):
-            best = other
-    if best is not heard:
-        score = lambda t: "?" if t.score is None else f"{t.score:.2f}"
-        print(f"[listen] Язык фразы: {heard.lang} ({score(heard)}) → {best.lang} ({score(best)})")
-    return best
+def parse_lang(word: str):
+    """«словацкий», «sk», «English» → код языка; не язык — None."""
+    word = " ".join((word or "").lower().split()).strip(".,!?«»\"'")
+    return next((lang for lang, words in LANG_WORDS.items() if word in words), None)
 
 
-async def recognize(audio: bytes, filename: str, waiting: bool = False, allowed=lambda: True, info: dict = None):
-    """Распознаёт фразу и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
+async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiting: bool = False, info: dict = None):
+    """Распознаёт фразу на языке сервера и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
     waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения.
     info — сюда для логов кладутся язык, уверенность Whisper и число запросов (без текста фразы)."""
     info = {} if info is None else info
     info["requests"] = 1
-    heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, detailed=True)
-    info.update(lang=heard.lang, score=heard.score)
+    heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+    info.update(lang=lang, score=heard.score)
     question = split_wake(heard.text)
-    called = question is not None
-    if not called and waiting and heard.text:
+    if question is None and waiting and heard.text:
         question = heard.text
-    if not question:
-        return question
-
-    def counted():
-        ok = allowed()
-        info["requests"] += ok
-        return ok
-    better = await recheck_language(audio, filename, heard, counted)
-    if better is not heard:
-        info.update(lang=better.lang, score=better.score)
-        question = (split_wake(better.text) if called else better.text) or question
     return question
 
 
@@ -469,9 +452,9 @@ class ListenSession:
             return
         audio = to_wav(pcm)
         del pcm
-        info = {}
+        info, lang = {}, listen_lang(self.guild.id)
         try:
-            question = await recognize(audio, "speech.wav", waiting, self._stt_allowed, info)
+            question = await recognize(audio, "speech.wav", lang, waiting, info)
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return
@@ -495,7 +478,7 @@ class ListenSession:
         print(f"[listen] {tag}: {note} — вопрос боту (слов: {len(question.split())})")
         self.followup.pop(user.id, None)
         self.last_wake = time.monotonic()
-        await self.cog.reply(self.channel, user, question, self.vc, "🎙️ из войса")
+        await self.cog.reply(self.channel, user, question, self.vc, "🎙️ из войса", lang=lang)
         print(f"[listen] {tag}: обработана за {time.monotonic() - started + SILENCE_SEC:.1f} с от конца фразы")
 
     async def stop(self, reason: str = None, disconnect: bool = True):
@@ -546,15 +529,15 @@ class VoiceListenCog(commands.Cog):
             asyncio.create_task(session.stop("модуль перезагружен"))
 
     async def reply(self, channel, user, question: str, vc=None, source: str = "",
-                    hint: str = "«Базарчик, …» — чтобы спросить", message=None):
+                    hint: str = "«Базарчик, …» — чтобы спросить", message=None, lang: str = None):
         """Ответ ИИ в чат и, если бот в войсе с автором, голосом. Сюда приходят и войс, и голосовые,
-        и обращения в чате (@бот …) — сначала фразу смотрит Джарвис."""
+        и обращения в чате (@бот …) — сначала фразу смотрит Джарвис. lang — язык прослушки для фраз голосом."""
         voice_cog = self.bot.get_cog("VoiceAICog")
         if voice_cog is None:
             return
         async with self.locks[channel.guild.id]:
             jarvis = self.bot.get_cog("JarvisCog")     # просьба что-то сделать — выполняет Джарвис (cogs/jarvis.py)
-            if jarvis is not None and await jarvis.handle(channel, user, question, vc, source, message=message):
+            if jarvis is not None and await jarvis.handle(channel, user, question, vc, source, message=message, lang=lang):
                 return
             started = time.monotonic()
             try:
@@ -621,6 +604,7 @@ class VoiceListenCog(commands.Cog):
             "фразы без обращения никуда не записываются."
             + (" «Базарчик» сначала слышит детектор прямо на сервере бота — в Groq уходят только фразы "
                "с обращением.\n" if wake_word.ENABLED else "\n") +
+            f"Слушаю на языке: **{LISTEN_LANGS[listen_lang(ctx.guild.id)]}** — сменить: `!язык`.\n"
             "Выключить: `!stoplisten`. Сам выключусь, если все уйдут или полчаса никто не обратится."
             + ("" if ready else "\n\n" + READY_LATER)))
         session.announced = ready
@@ -638,6 +622,36 @@ class VoiceListenCog(commands.Cog):
             return await ctx.send("❌ Я сейчас не слушаю войс.", delete_after=8)
         await session.stop(f"выключил {ctx.author.display_name}")
 
+    @commands.command(
+        name="listenlang", aliases=["язык", "lang"], brief="На каком языке бот слушает войс и голосовые",
+        help="Бот слушает один язык: русский, украинский, словацкий или английский — так Whisper не путает языки "
+             "и распознаёт фразу с первого раза.\n"
+             "`!язык` — какой сейчас; `!язык sk` / `!язык словацкий` — сменить (ru, uk, sk, en). "
+             "Менять — администраторам. Голосом: «Базарчик, слушай нас на словацком».")
+    @commands.guild_only()
+    async def listenlang(self, ctx, *, language: str = None):
+        from cogs.aliases import is_admin
+        current = listen_lang(ctx.guild.id)
+        if language is not None:
+            lang = parse_lang(language)
+            if lang is None:
+                return await ctx.send("❌ Такого языка нет. Варианты: `!язык ru`, `!язык uk`, `!язык sk`, `!язык en`.",
+                                      delete_after=10)
+            if not is_admin(ctx.author, ctx.channel):
+                return await ctx.send("❌ Язык прослушки меняют только администраторы.", delete_after=10)
+            if lang == current:
+                return await ctx.send(f"🎙️ Я и так слушаю на языке: **{LISTEN_LANGS[lang]}**.")
+            set_listen_lang(ctx.guild.id, lang)
+            print(f"[listen] {ctx.author.display_name}: язык прослушки {current} → {lang}")
+            return await ctx.send(f"🎙️ Теперь слушаю на языке: **{LISTEN_LANGS[lang]}**. "
+                                  "Фразы на других языках буду понимать плохо.")
+        options = "\n".join(f"`!язык {code}` — {name}" for code, name in LISTEN_LANGS.items())
+        e = discord.Embed(title=f"🎙️ Слушаю на языке: {LISTEN_LANGS[current]}", color=discord.Color.teal(),
+                          description="Войс (`!listen`) и голосовые сообщения распознаю только на этом языке — "
+                                      "фразы на других понимаю плохо.\n\n" + options +
+                                      "\n\nМенять — администраторам.")
+        await ctx.send(embed=e)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Запасной путь: голосовое сообщение «Базарчик, …» в чате — работает и без приёма голоса в войсе."""
@@ -647,10 +661,10 @@ class VoiceListenCog(commands.Cog):
         attachment = message.attachments[0]
         if attachment.size > 20 * 1024 * 1024:
             return
-        started, info = time.monotonic(), {}
+        started, info, lang = time.monotonic(), {}, listen_lang(message.guild.id)
         try:
             audio = await attachment.read()
-            question = await recognize(audio, attachment.filename or "voice.ogg", info=info)
+            question = await recognize(audio, attachment.filename or "voice.ogg", lang, info=info)
         except (discord.HTTPException, ai.AIError) as e:
             print(f"[listen] Голосовое сообщение от {message.author.display_name} не распознано: {e}")
             return
@@ -665,7 +679,8 @@ class VoiceListenCog(commands.Cog):
         author_voice = getattr(message.author, "voice", None)
         same_channel = (vc is not None and vc.is_connected() and author_voice is not None
                         and author_voice.channel == vc.channel)
-        await self.reply(message.channel, message.author, question, vc if same_channel else None, "🎤 голосовое")
+        await self.reply(message.channel, message.author, question, vc if same_channel else None, "🎤 голосовое",
+                         lang=lang)
 
 
 def setup(bot):
