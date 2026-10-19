@@ -2,6 +2,7 @@
 names.py — как бот узнаёт людей по имени: нормализация имён и прозвища, привязанные к ID участника.
 
 Прозвища хранятся по серверам в user_aliases.json: {"guild_id": {"user_id": ["Петя", "Петруха"]}}.
+Образец с правилами — user_aliases.example.json; правленный руками файл проверяет check_aliases() при запуске.
 На одном сервере прозвище принадлежит одному человеку. Сравниваются имена без регистра, диакритики
 и алфавита («Петруха» = «Petrukha»), а stem() убирает падежное окончание («Петруху» = «Петруха»).
 Кто и как может менять прозвища — в cogs/aliases.py.
@@ -39,7 +40,8 @@ def stem(name: str) -> str:
 
 # ── Прозвища ──────────────────────────────────────────────────
 def _guild(guild_id) -> dict:
-    return user_aliases.get(str(guild_id), {})
+    users = user_aliases.get(str(guild_id), {})
+    return users if isinstance(users, dict) else {}      # «_комментарий» в файле — не сервер
 
 
 def aliases_of(guild_id, user_id) -> list:
@@ -102,6 +104,86 @@ def clear_aliases(guild_id, user_id) -> int:
     if names:
         save_aliases()
     return len(names)
+
+
+def clean_alias(alias: str) -> str:
+    """Прозвище без лишних пробелов и кавычек по краям."""
+    return " ".join(str(alias or "").split()).strip("«»\"'`")
+
+
+def alias_issue(alias: str):
+    """Почему прозвище нельзя хранить (текст) или None. Те же правила, что у !alias, кроме лимита на число."""
+    low, high = ALIAS_LEN
+    if "<@" in alias or "@everyone" in alias or "@here" in alias:
+        return "упоминание"
+    if not low <= len(alias) <= high:
+        return f"не {low}–{high} символов"
+    if not norm_name(alias):
+        return "нет букв и цифр"
+    if alias.lower() in SELF_WORDS:
+        return "слово «я/мне»"
+    return None
+
+
+def check_aliases(data: dict = None) -> list:
+    """Проверка user_aliases.json при запуске — файл можно править руками (образец: user_aliases.example.json).
+    Исправляет, что можно (одно прозвище строкой вместо списка, пробелы, повторы), остальное убирает.
+    Ключи на «_» — комментарии, их не трогаем. Возвращает список замечаний; что-то исправили — сохраняет файл."""
+    data = user_aliases if data is None else data
+    notes = []
+    for gid in list(data):
+        if str(gid).startswith("_"):
+            continue
+        users = data[gid]
+        if not str(gid).isdigit() or not isinstance(users, dict):
+            notes.append(f"сервер «{gid}»: ключ — не ID сервера или внутри не {{ID участника: [прозвища]}} — убран")
+            del data[gid]
+            continue
+        taken = {}                                   # нормализованное прозвище → чьё
+        for uid in list(users):
+            raw = users[uid]
+            if not str(uid).isdigit():
+                notes.append(f"сервер {gid}: «{uid}» — не ID участника — убран")
+                del users[uid]
+                continue
+            if isinstance(raw, str):
+                notes.append(f"сервер {gid}, участник {uid}: прозвище строкой — сделал списком")
+                raw = [raw]
+            if not isinstance(raw, list):
+                notes.append(f"сервер {gid}, участник {uid}: вместо списка прозвищ {type(raw).__name__} — убран")
+                del users[uid]
+                continue
+            keep = []
+            for item in raw:
+                alias = clean_alias(item) if isinstance(item, str) else ""
+                why = alias_issue(alias) if alias else "пусто или не текст"
+                if why is None and any(same_alias(alias, k) for k in keep):
+                    why = "повтор"
+                owner = next((taken[key] for key in (norm_name(alias), stem(norm_name(alias))) if key in taken), None)
+                if why is None and owner is not None:
+                    why = f"уже у участника {owner}"
+                if why:
+                    notes.append(f"сервер {gid}, участник {uid}: «{alias or item}» — {why} — убрано")
+                    continue
+                keep.append(alias)
+                taken.setdefault(norm_name(alias), uid)
+                taken.setdefault(stem(norm_name(alias)), uid)
+            if not keep:
+                del users[uid]                   # пустой список прозвищ хранить незачем
+                if not raw:
+                    notes.append(f"сервер {gid}, участник {uid}: пустой список — убран")
+            elif keep != users[uid]:
+                users[uid] = keep
+                if not any(n.startswith(f"сервер {gid}, участник {uid}:") for n in notes):
+                    notes.append(f"сервер {gid}, участник {uid}: убраны пробелы/кавычки по краям")
+        if not users:
+            del data[gid]
+    if notes and data is user_aliases:
+        save_aliases()
+        print(f"[alias] user_aliases.json исправлен при запуске ({len(notes)}):")
+        for n in notes:
+            print(f"[alias]   {n}")
+    return notes
 
 
 def names_of(member) -> list:
@@ -183,3 +265,6 @@ class MemberRef(commands.Converter):
             if self.allow_users:
                 return await commands.UserConverter().convert(ctx, argument)
             raise commands.MemberNotFound(argument)
+
+
+check_aliases()                 # при запуске: файл могли поправить руками

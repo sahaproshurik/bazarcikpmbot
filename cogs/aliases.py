@@ -28,7 +28,7 @@ def is_admin(member, channel) -> bool:
 
 
 def clean(alias: str) -> str:
-    return " ".join((alias or "").split()).strip("«»\"'`")
+    return names.clean_alias(alias)
 
 
 def problem(guild, target, alias: str, admin: bool) -> Optional[str]:
