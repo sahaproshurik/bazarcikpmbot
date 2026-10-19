@@ -69,9 +69,12 @@ class InfoCog(commands.Cog):
         gid = str(ctx.guild.id) if ctx.guild else "dm"
         again = mode.strip().lower() in ("все", "всё", "all", "заново")
         new = whatsnew.pick_new(items, None if again else whatsnew_seen.get(gid))
-        await ctx.send(embed=whatsnew.embed_for(new, items))
-        if items and whatsnew_seen.get(gid) != items[0]["id"]:
-            whatsnew_seen[gid] = items[0]["id"]
+        shown, rest = whatsnew.batch(new)
+        for embed in whatsnew.embeds_for(shown, items, rest):    # каждое изменение — своим сообщением
+            await ctx.send(embed=embed)
+        last = shown[-1]["id"] if shown else (items[0]["id"] if items else None)
+        if last and whatsnew_seen.get(gid) != last:          # с остатком — продолжим с этого места
+            whatsnew_seen[gid] = last
             save_whatsnew()
 
     @commands.command(name="moneyhelp", brief="Гайд по денежной системе")
