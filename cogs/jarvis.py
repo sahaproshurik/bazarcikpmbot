@@ -192,6 +192,16 @@ def big_bet(ctx, values) -> bool:
     return bet is not None and BIG_BET_MIN <= bet <= cash and bet * 2 >= cash
 
 
+def mode_call(values: dict, guild):
+    """Режим ответа от ИИ → аргументы !режим: «<@id> yurchik». Без режима — команда покажет текущий."""
+    parts = []
+    if values.get("member") is not None:
+        parts.append(f"<@{values['member'].id}>")
+    if values.get("mode"):
+        parts.append(values["mode"])
+    return [], {"args": " ".join(parts)}, " ".join(parts)
+
+
 def durak_call(values: dict, guild):
     """Параметры дурака от ИИ → строка опций для !дурак. С ботами начинаем сразу — ждать некого."""
     parts = [values[k] for k in ("mode", "throwers", "deck") if values.get(k)]
@@ -283,6 +293,13 @@ ACTIONS = [
     Action("voice", "aivoice", "сменить голос озвучки, voice: male или female", "говори мужским голосом", VOICE,
            (P("voice", "choice", kw="voice_name", choices=("male", "female")),)),
     Action("forget", "aiclear", "очистить память разговора ИИ", "забудь наш разговор", VOICE),
+    Action("reply_mode", "mode", "режим, в котором бот отвечает человеку: mode — standard (обычный, на языке "
+           "собеседника), admin («язык админов», транслит латиницей) или yurchik (в манере Юрчика); member — кому "
+           "(не назван — себе). Без mode — показать режим: «отвечай мне как юрчик», «включи Пете язык админов», "
+           "«верни мне обычный режим», «какой у меня режим»", "отвечай мне как юрчик", VOICE,
+           (P("member", "member", required=False), P("mode", "choice", required=False,
+                                                      choices=("standard", "admin", "yurchik"))),
+           build=lambda values, guild: mode_call(values, guild)),
 
     Action("alias_add", "alias add", "запомнить прозвище участника: «запомни, что Петруха — это Петя», «зови меня "
            "Сашка»; member — кому (не назван — себе), alias — новое прозвище", "запомни, что Петруха — это Петя",
@@ -1187,7 +1204,7 @@ class JarvisCog(commands.Cog):
         if voice_cog is None:
             return
         try:
-            text = await voice_cog.answer(channel.guild.id, user.display_name, question)
+            text = await voice_cog.answer(channel.guild.id, user.display_name, question, user_id=user.id)
         except ai.AIError as e:
             await channel.send(f"❌ {e}", delete_after=15)
             return

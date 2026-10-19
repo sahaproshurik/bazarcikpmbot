@@ -8,7 +8,9 @@ import discord
 from discord.ext import commands
 import edge_tts
 import ai
+import reply_modes
 from config import AI_SYSTEM_PROMPT, TTS_SETTINGS
+from views import OwnedView, GREEN, GREY
 from data import AUTO_CHANNELS, YOUR_USER_ID
 
 AUDIO_FILE = os.path.abspath("greeting.mp3")
@@ -106,13 +108,19 @@ class VoiceAICog(commands.Cog):
 
     # ── AI Chat ───────────────────────────────────────────────
     # К ИИ в чате обращаются упоминанием: «@BazarčikPM вопрос или просьба» (cogs/jarvis.py, on_message).
-    async def answer(self, memory_key: int, name: str, question: str) -> str:
-        """Ответ ИИ с общей памятью сервера — для обращений в чате, голосовых сообщений и войса."""
+    async def answer(self, memory_key: int, name: str, question: str, user_id: int = None) -> str:
+        """Ответ ИИ с общей памятью сервера — для обращений в чате, голосовых сообщений и войса.
+        Манера — по режиму автора (!режим): стандартный, язык админов (транслит) или режим Юрчика.
+        Возвращает reply_modes.Answer: текст для чата, .speech — для голоса."""
         history = self._shared_histories[memory_key]
+        mode = reply_modes.mode_of(memory_key, user_id) if user_id is not None else reply_modes.DEFAULT
         user_message = {"role": "user", "content": f"[{name}]: {question}"}
-        reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
+        system = reply_modes.system_prompt(AI_SYSTEM_PROMPT, mode)
+        reply = await ai.chat([{"role": "system", "content": system}, *history, user_message])
         self.remember(memory_key, name, question, reply)
-        return reply
+        if mode != reply_modes.DEFAULT:
+            print(f"[ai] {name}: ответ в режиме {mode}")
+        return reply_modes.present(mode, reply)
 
     def remember(self, memory_key: int, name: str, question: str, reply: str):
         """Добавляет реплику в общую память — так ИИ помнит и то, что бот сделал по голосовой команде."""
@@ -169,6 +177,54 @@ class VoiceAICog(commands.Cog):
         TTS_SETTINGS["voice"] = match
         await ctx.send(f"✅ Голос изменён на `{match}` — "
                        f"{'мужской' if match in MALE_VOICES else 'женский'} во всех языках озвучки.")
+
+    # ── Режим ответа ──────────────────────────────────────────
+    @commands.command(name="mode", aliases=["режим"], brief="Режим ответа ИИ: стандартный, язык админов, Юрчик",
+                      help="`!режим` — твой режим и кнопки, чтобы сменить. `!режим юрчик` / `!режим админ` / "
+                           "`!режим стандарт` — сменить свой.\n"
+                           "Администраторам: `!режим @user` — режим участника, `!режим @user юрчик` — сменить ему, "
+                           "`!режим list` — у кого какой.\n"
+                           "Режимы: 🗣️ стандартный (на языке собеседника), 🔤 язык админов (транслит латиницей), "
+                           "🤪 режим Юрчика (в его манере).\n"
+                           "Словами: «@BazarčikPM отвечай мне как юрчик», «включи Пете язык админов».")
+    @commands.guild_only()
+    async def reply_mode(self, ctx, *, args: str = ""):
+        from cogs.aliases import is_admin
+        from names import find_member
+        if args.strip().lower() in ("list", "все", "всё", "all", "список"):
+            if not is_admin(ctx.author, ctx.channel):
+                return await ctx.send("❌ Список режимов смотрят только администраторы. Свой — `!режим`.",
+                                      delete_after=10)
+            rows = []
+            for uid, mode in sorted(reply_modes.modes_on(ctx.guild.id).items()):
+                member = ctx.guild.get_member(uid)
+                rows.append(f"{reply_modes.label(mode)} — {member.mention if member else f'участник {uid}'}")
+            e = discord.Embed(title="🎭 Режимы ответа", color=discord.Color.teal(),
+                              description="\n".join(rows) or "У всех стандартный.")
+            return await ctx.send(embed=e)
+        mode, who = reply_modes.parse_mode(args)
+        target = ctx.author
+        if who:
+            m = re.fullmatch(r"<@!?(\d+)>", who.strip())
+            if m:
+                target = ctx.guild.get_member(int(m.group(1)))
+            else:
+                try:
+                    target = find_member(ctx.guild, who, ctx.author)
+                except LookupError:
+                    return await ctx.send(f"❌ Не нашёл участника «{who}».", delete_after=10)
+                except ValueError as e:
+                    return await ctx.send(f"❌ Не понял, кого именно: {e}?", delete_after=10)
+            if target is None:
+                return await ctx.send("❌ Не нашёл такого участника.", delete_after=10)
+        if target.id != ctx.author.id and not is_admin(ctx.author, ctx.channel):
+            return await ctx.send("❌ Чужой режим смотрят и меняют только администраторы. Свой — `!режим`.",
+                                  delete_after=10)
+        if mode is not None:
+            reply_modes.set_mode(ctx.guild.id, target.id, mode)
+            print(f"[ai] {ctx.author.display_name}: режим {target.display_name} → {mode}")
+        await ctx.send(embed=mode_embed(ctx.guild.id, target, changed=mode is not None),
+                       view=ModeView(ctx.author, target))
 
     # ── Voice state ───────────────────────────────────────────
     @commands.Cog.listener()
@@ -269,6 +325,36 @@ class VoiceAICog(commands.Cog):
             if ch and len(ch.members) == 0:
                 try: await ch.delete()
                 except Exception as e: print(f"[ERROR] delete channel: {e}")
+
+
+def mode_embed(guild_id, target, changed: bool = False) -> discord.Embed:
+    mode = reply_modes.mode_of(guild_id, target.id)
+    emoji, name, about = reply_modes.MODES[mode]
+    others = "\n".join(f"{reply_modes.label(k)} — {v[2]}" for k, v in reply_modes.MODES.items())
+    e = discord.Embed(title=f"{'✅ ' if changed else ''}{emoji} {name}", color=discord.Color.teal(),
+                      description=f"Так бот отвечает **{target.display_name}**: {about}.\n\n{others}")
+    e.set_footer(text="Сменить — кнопкой ниже, «!режим юрчик» или словами: «@BazarčikPM отвечай мне как юрчик»")
+    return e
+
+
+class ModeView(OwnedView):
+    """Кнопки режимов: нажимает тот, кто открыл; меняет режим тому, чей он смотрит."""
+    deny_text = "Это не твоё меню — открой своё: `!режим`"
+
+    def __init__(self, user, target):
+        super().__init__(user, timeout=120)
+        self.target = target
+        current = reply_modes.mode_of(target.guild.id, target.id)
+        for key, (emoji, name, _) in reply_modes.MODES.items():
+            self.btn(name, self._pick(key), GREEN if key == current else GREY, emoji=emoji, disabled=key == current)
+
+    def _pick(self, mode: str):
+        async def cb(interaction: discord.Interaction):
+            reply_modes.set_mode(self.target.guild.id, self.target.id, mode)
+            print(f"[ai] {interaction.user.display_name}: режим {self.target.display_name} → {mode} (кнопка)")
+            await interaction.response.edit_message(embed=mode_embed(self.target.guild.id, self.target, True),
+                                                    view=ModeView(self.user, self.target))
+        return cb
 
 
 def setup(bot):

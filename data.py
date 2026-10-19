@@ -24,6 +24,7 @@ MOD_FILE        = "mod_data.json"
 CASINO_FILE     = "casino_stats.json"
 ALIASES_FILE    = "user_aliases.json"
 WHATSNEW_FILE   = "whatsnew_seen.json"
+REPLY_MODES_FILE = "reply_modes.json"
 
 
 # ── JSON helpers ──────────────────────────────────────────────
@@ -69,6 +70,7 @@ casino_stats      = load_json(CASINO_FILE)             # {uid: {games, wins, wag
 user_aliases      = load_json(ALIASES_FILE)            # {guild_id: {user_id: ["Петя", "Петруха"]}} — прозвища по ID
 mod_data          = load_json(MOD_FILE)                # кейсы, временные баны, локдауны
 whatsnew_seen     = load_json(WHATSNEW_FILE)           # {guild_id: id последнего рассказанного обновления}
+reply_modes       = load_json(REPLY_MODES_FILE)        # {guild_id: {user_id: "admin" | "yurchik"}} — режим ответа ИИ
 for _key, _default in (("cases", []), ("tempbans", []), ("lockdown", {})):
     mod_data.setdefault(_key, _default)
 
@@ -90,6 +92,7 @@ def save_mod():         save_json(MOD_FILE,         mod_data)
 def save_casino():      save_json(CASINO_FILE,      casino_stats)
 def save_aliases():     save_json(ALIASES_FILE,     user_aliases)
 def save_whatsnew():    save_json(WHATSNEW_FILE,    whatsnew_seen)
+def save_reply_modes(): save_json(REPLY_MODES_FILE, reply_modes)
 
 
 # ── Mafia state ───────────────────────────────────────────────

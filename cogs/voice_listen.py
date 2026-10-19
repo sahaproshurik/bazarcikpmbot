@@ -558,7 +558,7 @@ class VoiceListenCog(commands.Cog):
                 return
             started = time.monotonic()
             try:
-                reply = await voice_cog.answer(channel.guild.id, user.display_name, question)
+                reply = await voice_cog.answer(channel.guild.id, user.display_name, question, user_id=user.id)
             except ai.AIError as e:
                 print(f"[listen] {user.display_name}: ответ ИИ не получен: {e}")
                 await channel.send(f"❌ {e}", delete_after=15)
@@ -569,7 +569,7 @@ class VoiceListenCog(commands.Cog):
             await channel.send(embed=embed)
             if vc is not None and vc.is_connected():
                 try:
-                    await say(vc, reply)
+                    await say(vc, getattr(reply, "speech", reply))   # «язык админов»: голосом — кириллица
                 except Exception as e:
                     print(f"[listen] Озвучка не удалась: {e!r}")
 
