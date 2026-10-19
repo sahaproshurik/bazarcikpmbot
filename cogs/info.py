@@ -1,6 +1,8 @@
+import asyncio
 import discord
 from discord.ext import commands
-from data import player_funds, player_bank, player_xp, priemer_data, player_warns
+from data import player_funds, player_bank, player_xp, priemer_data, player_warns, whatsnew_seen, save_whatsnew
+import whatsnew
 from cogs.xp import get_level
 from cogs.economy import init_player
 
@@ -56,6 +58,21 @@ class InfoCog(commands.Cog):
         embed.add_field(name="Эмодзи",    value=str(len(g.emojis)))
         if g.icon: embed.set_thumbnail(url=g.icon.url)
         await ctx.send(embed=embed)
+
+    @commands.command(name="whatsnew", aliases=["чтонового", "обновления"],
+                      brief="Чему бот научился: что добавили с прошлого раза",
+                      help="`!чтонового` — что добавили в бота с прошлого рассказа на этом сервере.\n"
+                           "`!чтонового все` — свежие обновления заново.\n"
+                           "Словами: «@BazarčikPM чему новому ты научился».")
+    async def whatsnew_cmd(self, ctx, *, mode: str = ""):
+        items = await asyncio.to_thread(whatsnew.history)      # git log — не держим цикл событий
+        gid = str(ctx.guild.id) if ctx.guild else "dm"
+        again = mode.strip().lower() in ("все", "всё", "all", "заново")
+        new = whatsnew.pick_new(items, None if again else whatsnew_seen.get(gid))
+        await ctx.send(embed=whatsnew.embed_for(new, items))
+        if items and whatsnew_seen.get(gid) != items[0]["id"]:
+            whatsnew_seen[gid] = items[0]["id"]
+            save_whatsnew()
 
     @commands.command(name="moneyhelp", brief="Гайд по денежной системе")
     async def moneyhelp(self, ctx):

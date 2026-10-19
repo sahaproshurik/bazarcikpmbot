@@ -27,6 +27,7 @@ import discord
 from discord.ext import commands
 from discord.ext.commands.view import StringView
 import ai
+import whatsnew
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
 from names import norm_name, all_aliases, find_member, name_score
 from config import TTS_SETTINGS
@@ -165,6 +166,7 @@ class Action:
     hierarchy: bool = False             # заранее проверить иерархию ролей (как в moderation)
     build: object = None                # (значения, сервер) → (args, kwargs, описание) — свой вызов команды
     full: dict = field(default_factory=dict)  # для STRICT: фраза, которую надо сказать целиком, по языкам
+    speak: object = None                # (сообщения команды) → что сказать голосом вместо пересказа ИИ
 
 
 def clear_call(values: dict, guild):
@@ -234,6 +236,8 @@ ACTIONS = [
     Action("serverinfo", "serverinfo", "информация о сервере", "расскажи про сервер", INFO),
     Action("inventory", "inventory", "инвентарь", "что у меня в инвентаре", INFO, (MEMBER_OPT,)),
     Action("warns", "warns", "посмотреть предупреждения", "сколько варнов у Пети", INFO, (MEMBER_OPT,)),
+    Action("whatsnew", "whatsnew", "что нового в боте: чему ты научился, что добавили, обновления, новые фишки",
+           "чему новому ты научился", INFO, speak=lambda sent: whatsnew.voice_text(sent)),
 
     Action("games", "games", "меню всех игр кнопками: во что поиграть, покажи игры", "во что можно поиграть", CASINO),
     Action("casino", "casino", "правила казино и статистика игр", "моя статистика в казино", CASINO, (MEMBER_OPT,)),
@@ -960,7 +964,8 @@ class JarvisCog(commands.Cog):
             if ctx.channel.sent:            # команда сама всё показала в чате — не дублируем её итог
                 return self.remember(p, f"Выполнил {p.shown}")
             return await reply(f"✅ Выполнил `{p.shown}`", footer=footer, speak_text=None)
-        await reply(await self.summarize(p, plain_text(ctx.channel.sent, p.channel.guild)), footer=footer)
+        spoken = p.action.speak(ctx.channel.sent) if p.action.speak else ""
+        await reply(spoken or await self.summarize(p, plain_text(ctx.channel.sent, p.channel.guild)), footer=footer)
 
     async def summarize(self, p: Pending, result: str) -> str:
         if not result:
