@@ -79,9 +79,26 @@ def voice_for(text: str) -> str:
     return male if chosen in MALE_VOICES else female
 
 
+_hushed: dict = {}          # guild_id → сколько раз озвучку обрывали «Базарчик, стоп»
+
+
+def hush(vc) -> bool:
+    """«Базарчик, стоп»: обрывает фразу, которая звучит, и выбрасывает всё, что ждёт очереди.
+    True — бот в этот момент говорил."""
+    gid = getattr(getattr(vc, "guild", None), "id", None)
+    _hushed[gid] = _hushed.get(gid, 0) + 1
+    playing = vc.is_playing()
+    if playing:
+        vc.stop()
+    return playing
+
+
 async def say(vc: discord.VoiceClient, text: str):
     """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза.
-    В логах — голос, длина, время синтеза, ожидание очереди и сколько фраза звучала."""
+    В логах — голос, длина, время синтеза, ожидание очереди и сколько фраза звучала.
+    Фраза, поставленная в очередь до «Базарчик, стоп» (hush), не звучит."""
+    gid = getattr(getattr(vc, "guild", None), "id", None)
+    epoch = _hushed.get(gid, 0)
     voice = voice_for(text)
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
         tts_path = f.name
@@ -94,8 +111,13 @@ async def say(vc: discord.VoiceClient, text: str):
         except OSError: pass
         raise
     synth = time.monotonic() - started
-    while vc.is_playing():
+    while vc.is_playing() and _hushed.get(gid, 0) == epoch:
         await asyncio.sleep(0.3)
+    if _hushed.get(gid, 0) != epoch:
+        print(f"[tts] {voice}: {len(text)} символов — не озвучено, остановили «стоп»")
+        try: os.unlink(tts_path)
+        except OSError: pass
+        return
     queued = time.monotonic() - started - synth
     print(f"[tts] {voice}: {len(text)} символов, синтез {synth:.1f} с"
           + (f", ждал очередь {queued:.1f} с" if queued >= 0.3 else ""))

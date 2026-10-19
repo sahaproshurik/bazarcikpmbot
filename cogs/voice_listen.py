@@ -28,7 +28,7 @@ from discord.sinks import Sink
 import ai
 import diag
 import wake_word
-from cogs.voice_ai import say, answer_embed
+from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
 from names import aliases_of, all_aliases, norm_name
 
@@ -41,6 +41,38 @@ try:
     from discord.voice.packets.core import OPUS_SILENCE
 except Exception:                 # нет голосовых зависимостей или другая версия py-cord
     PacketDecryptor, OPUS_SILENCE = None, b"\xf8\xff\xfe"
+try:
+    from nacl.exceptions import CryptoError
+except ImportError:
+    class CryptoError(Exception):
+        pass
+
+_crypto = {"count": 0, "noted": 0.0}   # пакеты, которые не расшифровались: пишем в лог раз в 30 с, а не трейсбэком
+
+
+def _crypto_failed():
+    """Discord сменил ключи шифрования, а пакеты по старым ещё летят — пропускаем их тихо."""
+    _crypto["count"] += 1
+    now = time.monotonic()
+    if now - _crypto["noted"] >= 30:
+        print(f"[listen] Пакеты голоса не расшифровались ({_crypto['count']} шт.) — Discord сменил ключи, "
+              "пропускаю их; звук восстановится сам")
+        _crypto["count"], _crypto["noted"] = 0, now
+
+
+# py-cord при остановке записи ещё раз останавливает её из своего потока и падает «You are not recording»,
+# а заодно предупреждает про DAVE — и то и другое безвредно, в логе только мешает.
+warnings.filterwarnings("ignore", message="Voice reception is currently broken", category=RuntimeWarning)
+if not getattr(threading.excepthook, "_bazarcik", False):
+    _default_excepthook = threading.excepthook
+
+    def _quiet_router(args):
+        if (getattr(args.exc_type, "__name__", "") == "RecordingException" and "not recording" in str(args.exc_value)
+                and str(getattr(args.thread, "name", "")).startswith("voice-receiver-packet-router")):
+            return
+        _default_excepthook(args)
+    _quiet_router._bazarcik = True
+    threading.excepthook = _quiet_router
 
 DAVE_MAGIC = b"\xfa\xfa"          # так заканчивается кадр, зашифрованный сквозным шифрованием DAVE
 
@@ -52,8 +84,12 @@ def _decrypt_rtp_fixed(self, packet):
     if self.mode != "aead_xchacha20_poly1305_rtpsize":
         return PacketDecryptor._bazarcik_original(self, packet)
     packet.adjust_rtpsize()
-    result = self.box.decrypt(packet.decrypted_data or packet.data, bytes(packet.header),
-                              packet.nonce + b"\x00" * 20)
+    try:
+        result = self.box.decrypt(packet.decrypted_data or packet.data, bytes(packet.header),
+                                  packet.nonce + b"\x00" * 20)
+    except CryptoError:
+        _crypto_failed()
+        return OPUS_SILENCE
     payload = result[packet.update_extended_header(result):] if packet.extended else result
     state = self.client._connection
     dave = state.dave_session
@@ -87,6 +123,12 @@ READY_QUICK_SEC = 3          # готов быстрее — одно сообщ
 READY_NOTE_SEC  = 20         # детектор всё ещё грузится — говорим «готов», а фразы пока распознаёт Whisper
 READY_LATER     = "⏳ Напишу здесь, когда буду готов слушать."
 WAKE_HINT       = "Базарчик, BazarčikPM"
+OK_SAID         = {"ru": "Хорошо.", "uk": "Добре.", "sk": "Dobre.", "en": "Okay."}
+MORE_IN_CHAT    = {"ru": "Остальное — в чате.", "uk": "Решта — в чаті.", "sk": "Zvyšok je v chate.",
+                   "en": "The rest is in the chat."}
+SPEECH_CHARS    = 250        # голосом — одно-два предложения ответа ИИ, полностью — в чате
+STOP_WORDS      = {"стоп", "хватит", "замолчи", "заткнись", "тихо", "молчи", "стой", "досить", "годі", "тихіше",
+                   "stop", "stoj", "dost", "dosť", "ticho", "prestaň", "enough", "quiet", "shut"}
 LISTENING       = {"ru": "Слушаю, {name}.", "uk": "Слухаю, {name}.", "sk": "Počúvam, {name}.",
                    "en": "I'm listening, {name}."}
 HINT_CHARS      = 200        # подсказка Whisper — до 224 токенов, кириллица тратит их быстро: держим с запасом
@@ -104,7 +146,7 @@ LANG_WORDS      = {
 }
 DEFAULT_LANG    = "ru"
 WAKE_RE = re.compile(
-    r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р\s?ч\w*|baz[aá]r\s?[cč]h?\w*)[\s,.!?:;…—-]*",
+    r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р[\s,-]{0,2}ч\w*|baz[aá]r[\s,-]{0,2}[cč]h?\w*)[\s,.!?:;…—-]*",
     re.IGNORECASE)
 
 
@@ -129,6 +171,27 @@ def parse_lang(word: str):
     """«словацкий», «sk», «English» → код языка; не язык — None."""
     word = " ".join((word or "").lower().split()).strip(".,!?«»\"'")
     return next((lang for lang, words in LANG_WORDS.items() if word in words), None)
+
+
+def speech_part(text: str, lang: str = DEFAULT_LANG) -> str:
+    """Что сказать голосом: первые одно-два предложения, не длиннее SPEECH_CHARS; отрезали — «остальное в чате»."""
+    text = " ".join((text or "").split())
+    if len(text) <= SPEECH_CHARS:
+        return text
+    spoken = ""
+    for sentence in re.split(r"(?<=[.!?…])\s+", text)[:2]:
+        if len(spoken) + len(sentence) + 1 > SPEECH_CHARS:
+            break
+        spoken = f"{spoken} {sentence}".strip()
+    if not spoken:                          # одно длинное предложение — режем по слову
+        spoken = text[:SPEECH_CHARS].rsplit(" ", 1)[0].rstrip(",;:—-") + "…"
+    return f"{spoken} {MORE_IN_CHAT.get(lang, MORE_IN_CHAT['ru'])}"
+
+
+def is_stop(question: str) -> bool:
+    """«Базарчик, стоп» / «хватит» / «замолчи» — короткая фраза из слова-стопа."""
+    words = re.findall(r"\w+", (question or "").lower())
+    return 0 < len(words) <= 3 and words[0] in STOP_WORDS
 
 
 def spoken_name(member) -> str:
@@ -169,6 +232,7 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
     info["requests"] = 1
     try:
         heard = await ai.transcribe(audio, filename, hint=hint, language=lang, detailed=True)
+        info["head"] = " ".join((heard.text or "").split()[:2])[:40]   # для лога, если обращения не нашлось
     except ai.AIError as e:
         if hint == WAKE_HINT:
             raise
@@ -334,7 +398,7 @@ class ListenSession:
                 f"без «Базарчик» (ждали ответ) {c.get('bypass', 0)}, запросов в Whisper {c.get('whisper', 0)}, "
                 f"вопросов боту {c.get('questions', 0)}, отсеял Whisper {c.get('dropped', 0)}, "
                 f"мимо лимита {c.get('limit', 0)}, коротких в окне подтверждения {c.get('short', 0)}, "
-                f"пока занят другим {c.get('busy', 0)}")
+                f"пока занят другим {c.get('busy', 0)}, «стоп» {c.get('stopped', 0)}")
 
     def busy_with(self, user):
         """С кем бот разговаривает, если не с этим человеком; None — свободен или разговор с ним самим.
@@ -342,8 +406,8 @@ class ListenSession:
         partner = self.partner
         if partner is None or partner.id == user.id:
             return None
-        if self.serving or time.monotonic() <= self.followup.get(partner.id, 0):
-            return partner
+        if self.serving or self.vc.is_playing() or time.monotonic() <= self.followup.get(partner.id, 0):
+            return partner                # в том числе пока бот договаривает ему ответ
         self.partner = None               # разговор закончен — бот снова слушает всех
         return None
 
@@ -486,9 +550,14 @@ class ListenSession:
             self.count("busy")
             print(f"[listen] {tag}: бот разговаривает с {other.display_name} — фраза пропущена")
             return                        # до конца разговора остальных не слушаем — даже детектором
-        waiting = started <= self.followup.get(user.id, 0)
+        seconds = len(pcm) / BYTES_PER_SEC
+        # фраза считается в окне, если в окне началась — длинный вопрос не должен «опоздать» из-за своей длины
+        waiting = started - SILENCE_SEC - seconds <= self.followup.get(user.id, 0)
+        partner = self.partner
+        if not waiting and partner is not None and partner.id == user.id and self.vc.is_playing():
+            return await self._while_speaking(user, pcm, tag)
         if waiting:
-            seconds, need = len(pcm) / BYTES_PER_SEC, self.min_phrase.get(user.id, 0)
+            need = self.min_phrase.get(user.id, 0)
             if seconds < need:
                 self.count("short")
                 print(f"[listen] {tag}: фраза {seconds:.1f} с короче {need} с — в окне полного подтверждения "
@@ -511,6 +580,53 @@ class ListenSession:
             await self._converse(user, pcm, tag, started, waiting)
         finally:
             self.serving -= 1
+
+    def confirming(self, user) -> bool:
+        """Джарвис спрашивает у человека подтверждение (кик, бан, перевод) — такой вопрос договаривается целиком."""
+        bot = getattr(self.cog, "bot", None)
+        jarvis = bot.get_cog("JarvisCog") if bot is not None else None
+        p = getattr(jarvis, "pending", {}).get((self.guild.id, user.id)) if jarvis is not None else None
+        return p is not None and not p.done
+
+    async def _while_speaking(self, user, pcm: bytes, tag: str):
+        """Бот отвечает собеседнику голосом: от него слышим только «Базарчик, стоп», остальное пропускаем.
+        Вопрос-подтверждение не прерывается — его бот договаривает до конца."""
+        if self.confirming(user):
+            self.count("busy")
+            print(f"[listen] {tag}: бот договаривает вопрос-подтверждение — фраза пропущена")
+            return
+        if not await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с), бот говорит"):
+            return
+        if not self._stt_allowed():
+            self.count("limit")
+            return
+        audio, lang, info = to_wav(pcm), listen_lang(self.guild.id), {}
+        del pcm
+        try:
+            question = await recognize(audio, "speech.wav", lang, False, info)
+        except ai.AIError as e:
+            print(f"[listen] {tag}: распознавание не удалось: {e}")
+            return
+        finally:
+            del audio
+            self.count("whisper", info.get("requests", 0))
+        if is_stop(question):
+            return await self.stop_speaking(user, tag, lang)
+        self.count("busy")
+        print(f"[listen] {tag}: пока бот отвечает, слушаю только «Базарчик, стоп» — фраза пропущена")
+
+    async def stop_speaking(self, user, tag: str, lang: str):
+        """«Базарчик, стоп»: озвучка обрывается (и то, что ждало очереди), бот говорит «Хорошо» и снова слушает всех."""
+        hush(self.vc)
+        self.partner = None
+        self.followup.pop(user.id, None)
+        self.min_phrase.pop(user.id, None)
+        self.count("stopped")
+        print(f"[listen] {tag}: «Базарчик, стоп» — озвучка прервана, бот снова слушает всех")
+        try:
+            await say(self.vc, OK_SAID.get(lang, OK_SAID["ru"]))
+        except Exception as e:
+            print(f"[listen] Не удалось ответить голосом: {e!r}")
 
     async def _converse(self, user, pcm: bytes, tag: str, started: float, waiting: bool):
         """Фраза собеседника: лимит → Whisper → «Слушаю, имя» или ответ."""
@@ -537,7 +653,9 @@ class ListenSession:
         note = whisper_note(info, time.monotonic() - started)
         if question is None:
             self.count("dropped")
-            print(f"[listen] {tag}: {note} — обращения нет, фраза выброшена")
+            heard = (f" (начало: «{info.get('head', '')}»)" if getattr(wake_word.detector, "model", None) is not None
+                     and not waiting else "")   # детектор услышал «Базарчик», а Whisper — нет: что он записал
+            print(f"[listen] {tag}: {note} — обращения нет, фраза выброшена{heard}")
             return                        # обычный разговор — не к боту, расшифровку выбрасываем
         if not question:
             print(f"[listen] {tag}: {note} — позвали без вопроса, жду вопрос {FOLLOWUP_SEC} с; "
@@ -547,6 +665,10 @@ class ListenSession:
                 await say(self.vc, LISTENING.get(lang, LISTENING["ru"]).format(name=spoken_name(user)))
             except Exception as e:
                 print(f"[listen] Не удалось ответить голосом: {e!r}")
+            for _ in range(40):                   # say() возвращается, когда звук только пошёл, — ждём конца
+                if not self.vc.is_playing():
+                    break
+                await asyncio.sleep(0.25)
             if self.followup.get(user.id, 0):     # окно — от конца «Слушаю», а не от его начала
                 self.followup[user.id] = max(self.followup[user.id], time.monotonic() + FOLLOWUP_SEC)
             return
@@ -627,8 +749,8 @@ class VoiceListenCog(commands.Cog):
             embed.set_footer(text=f"{source} • {hint}")
             await channel.send(embed=embed)
             if vc is not None and vc.is_connected():
-                try:
-                    await say(vc, getattr(reply, "speech", reply))   # «язык админов»: голосом — кириллица
+                try:                                          # «язык админов»: голосом — кириллица; голосом — коротко
+                    await say(vc, speech_part(getattr(reply, "speech", reply), lang or listen_lang(channel.guild.id)))
                 except Exception as e:
                     print(f"[listen] Озвучка не удалась: {e!r}")
 
