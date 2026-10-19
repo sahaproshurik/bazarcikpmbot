@@ -80,6 +80,9 @@ ALONE_STOP_SEC  = 60         # в войсе никого — выключаем
 IDLE_STOP_SEC   = 30 * 60    # полчаса никто не обращался — выключаемся
 STT_LIMIT       = (40, 300)  # не больше 40 распознаваний за 5 минут — бережём лимиты Groq
 QUIET_HINT_SEC  = 45         # столько ждём хоть какого-то звука, прежде чем подсказать про DAVE
+READY_QUICK_SEC = 3          # готов быстрее — одно сообщение «слушаю»; дольше — «захожу…», потом «готов»
+READY_NOTE_SEC  = 20         # детектор всё ещё грузится — говорим «готов», а фразы пока распознаёт Whisper
+READY_LATER     = "⏳ Напишу здесь, когда буду готов слушать."
 WAKE_HINT       = "Базарчик, BazarčikPM"
 LANG_PRIORITY   = {"uk": 0, "ru": 1, "sk": 2, "en": 2}  # меньше — важнее: укр → рус → словацкий = английский
 LANG_MARGIN     = 0.15       # фора по уверенности Whisper (avg_logprob) за каждую ступень приоритета
@@ -285,6 +288,9 @@ class ListenSession:
         self.stt_times: deque = deque()
         self.tasks: set = set()
         self.warned_quiet = self.warned_limit = self.stopping = False
+        self.announced = False            # написали ли в чат «готов слушать»
+        self.intro = None                 # первое сообщение сессии — его заголовок правим, когда готовы
+        self.intro_sent = False           # «готов» пишем только после первого сообщения, не раньше
         self.loop_task = None
         self.restarts = 0
         self.reported_at = self.started
@@ -314,6 +320,53 @@ class ListenSession:
         print(f"[listen] Старт: {getattr(self.guild, 'name', self.guild.id)} / "
               f"{getattr(self.vc.channel, 'name', self.vc.channel)}, людей {humans}; "
               f"детектор {wake_word.detector.state}; {diag.report()}")
+
+    def dave_ready(self) -> bool:
+        """Сквозное шифрование голоса (DAVE): пока обмен ключами не закончен, вместо звука приходит тишина."""
+        state = getattr(self.vc, "_connection", None)
+        if not getattr(state, "dave_protocol_version", 0):
+            return True                    # канал без DAVE — звук расшифровывается сразу
+        dave = getattr(state, "dave_session", None)
+        return bool(dave is not None and dave.ready)
+
+    def readiness(self) -> tuple:
+        """(готов ли слушать, что мешает): «шифрование» или «детектор»."""
+        if not self.dave_ready():
+            return False, "шифрование"
+        if wake_word.detector.loading():
+            return False, "детектор"
+        return True, ""
+
+    async def announce(self, note: str = ""):
+        """«Готов слушать» — отдельным сообщением (правка заголовка не уведомляет), заголовок первого — тоже."""
+        self.announced = True
+        print(f"[listen] Готов слушать через {time.monotonic() - self.started:.1f} с; детектор "
+              f"{wake_word.detector.state}" + (f" ({note})" if note else ""))
+        text = f"✅ Готов слушать {self.vc.channel.mention}! Говорите: **«Базарчик, …»**"
+        if note:
+            text += f"\n{note}"
+        try:
+            await self.channel.send(text)
+        except discord.HTTPException as e:
+            print(f"[listen] Не удалось написать «готов слушать»: {e!r}")
+        try:                               # заголовок — мелочь: его ошибка не должна ронять прослушивание
+            if self.intro is not None and self.intro.embeds:
+                embed = self.intro.embeds[0]
+                embed.title = "🎙️ Слушаю войс"
+                embed.description = (embed.description or "").replace("\n\n" + READY_LATER, "")
+                await self.intro.edit(embed=embed)
+        except Exception as e:
+            print(f"[listen] Не удалось поправить заголовок: {e!r}")
+
+    async def check_ready(self, now: float):
+        if self.announced or not self.intro_sent:
+            return
+        ready, why = self.readiness()
+        if ready:
+            await self.announce()
+        elif why == "детектор" and now - self.started > READY_NOTE_SEC:
+            await self.announce("Детектор «Базарчик» ещё загружается — пока распознаю каждую фразу через Whisper, "
+                                "отвечать буду чуть медленнее.")
 
     def _on_reader_stop(self, error):     # колбэк py-cord из его потока
         if error is not None and not self.stopping:
@@ -346,6 +399,7 @@ class ListenSession:
                 if not self.vc.is_connected():
                     return await self.stop("бот отключился от войса")
                 now = time.monotonic()
+                await self.check_ready(now)
                 humans = [m for m in self.vc.channel.members if not m.bot]
                 self.alone_since = None if humans else (self.alone_since or now)
                 if self.alone_since and now - self.alone_since > ALONE_STOP_SEC:
@@ -555,15 +609,26 @@ class VoiceListenCog(commands.Cog):
                 f"❌ Приём голоса не запустился: `{e}`.\nСкорее всего, мешает шифрование голоса Discord (DAVE). "
                 "Отправь **голосовое сообщение** «Базарчик, …» в чат — на него я отвечу.")
         self.sessions[ctx.guild.id] = session
-        e = discord.Embed(title="🎙️ Слушаю войс", color=discord.Color.teal(), description=(
+        waited = time.monotonic()
+        while not session.readiness()[0] and time.monotonic() - waited < READY_QUICK_SEC and not session.stopping:
+            await asyncio.sleep(0.2)
+        ready = session.readiness()[0]
+        title = "🎙️ Слушаю войс — можно говорить" if ready else "🎙️ Захожу в войс — секунду…"
+        e = discord.Embed(title=title, color=discord.Color.teal(), description=(
             f"Канал: {voice.channel.mention}\n"
             "Обращайся: **«Базарчик, …»** — отвечу голосом и продублирую в чат.\n\n"
             "🔒 Звук хранится только в памяти до распознавания (Groq Whisper) и сразу удаляется, "
             "фразы без обращения никуда не записываются."
             + (" «Базарчик» сначала слышит детектор прямо на сервере бота — в Groq уходят только фразы "
                "с обращением.\n" if wake_word.ENABLED else "\n") +
-            "Выключить: `!stoplisten`. Сам выключусь, если все уйдут или полчаса никто не обратится."))
-        await ctx.send(embed=e)
+            "Выключить: `!stoplisten`. Сам выключусь, если все уйдут или полчаса никто не обратится."
+            + ("" if ready else "\n\n" + READY_LATER)))
+        session.announced = ready
+        session.intro = await ctx.send(embed=e)
+        session.intro_sent = True
+        if ready:
+            print(f"[listen] Готов слушать через {time.monotonic() - session.started:.1f} с; "
+                  f"детектор {wake_word.detector.state}")
 
     @commands.command(name="stoplisten", aliases=["unlisten", "хватит"], brief="Перестать слушать войс")
     @commands.guild_only()

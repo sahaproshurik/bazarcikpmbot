@@ -193,6 +193,10 @@ class WakeWord:
         if ENABLED and self.model is None and (self._task is None or self._task.done()):
             self._task = asyncio.get_running_loop().create_task(self._load())
 
+    def loading(self) -> bool:
+        """Модель ещё грузится (или скачивается). Не грузится и не готова — значит, выключена или сломалась."""
+        return self._task is not None and not self._task.done()
+
     def release(self):
         """Сессия закончилась: без слушающих сессий модель не держим в памяти."""
         self.users = max(0, self.users - 1)
