@@ -484,8 +484,10 @@ class VoiceListenCog(commands.Cog):
         for session in list(self.sessions.values()):
             asyncio.create_task(session.stop("модуль перезагружен"))
 
-    async def reply(self, channel, user, question: str, vc=None, source: str = ""):
-        """Ответ ИИ в чат и, если бот в войсе с автором, голосом."""
+    async def reply(self, channel, user, question: str, vc=None, source: str = "",
+                    hint: str = "«Базарчик, …» — чтобы спросить"):
+        """Ответ ИИ в чат и, если бот в войсе с автором, голосом. Сюда приходят и войс, и голосовые,
+        и обращения в чате (@бот …) — сначала фразу смотрит Джарвис."""
         voice_cog = self.bot.get_cog("VoiceAICog")
         if voice_cog is None:
             return
@@ -502,7 +504,7 @@ class VoiceListenCog(commands.Cog):
                 return
             print(f"[listen] {user.display_name}: ответ ИИ за {time.monotonic() - started:.1f} с, {len(reply)} символов")
             embed = answer_embed(user, question, reply)
-            embed.set_footer(text=f"{source} • «Базарчик, …» — чтобы спросить")
+            embed.set_footer(text=f"{source} • {hint}")
             await channel.send(embed=embed)
             if vc is not None and vc.is_connected():
                 try:

@@ -105,24 +105,9 @@ class VoiceAICog(commands.Cog):
         self._shared_histories = defaultdict(lambda: deque(maxlen=HISTORY_MESSAGES))
 
     # ── AI Chat ───────────────────────────────────────────────
-    @commands.command(
-        name="ask", aliases=["a", "спроси"], brief="Спросить ИИ (бот помнит общий разговор)",
-        help="`!ask вопрос` — ИИ отвечает в чате. Если ты в голосовом канале, бот ещё и озвучит ответ.\n"
-             "ИИ помнит последние реплики всех участников сервера. Очистить память: `!aiclear`.")
-    async def ask_ai(self, ctx, *, question: str):
-        status_msg = await ctx.send(f"💬 **{ctx.author.display_name}**: {question}\n⏳ *Думаю…*")
-        try:
-            reply = await self.answer(ctx.guild.id if ctx.guild else ctx.author.id, ctx.author.display_name, question)
-        except ai.AIError as e:
-            await status_msg.edit(content=f"💬 **{ctx.author.display_name}**: {question}\n❌ {e}")
-            return
-        await status_msg.edit(content=None, embed=answer_embed(ctx.author, question, reply))
-
-        if ctx.guild and ctx.author.voice:
-            await self._speak(ctx, reply)
-
+    # К ИИ в чате обращаются упоминанием: «@BazarčikPM вопрос или просьба» (cogs/jarvis.py, on_message).
     async def answer(self, memory_key: int, name: str, question: str) -> str:
-        """Ответ ИИ с общей памятью сервера — для !ask, голосовых сообщений и прослушивания войса."""
+        """Ответ ИИ с общей памятью сервера — для обращений в чате, голосовых сообщений и войса."""
         history = self._shared_histories[memory_key]
         user_message = {"role": "user", "content": f"[{name}]: {question}"}
         reply = await ai.chat([{"role": "system", "content": AI_SYSTEM_PROMPT}, *history, user_message])
@@ -137,28 +122,18 @@ class VoiceAICog(commands.Cog):
     def recent(self, memory_key: int, count: int) -> list:
         return list(self._shared_histories[memory_key])[-count:]
 
-    async def _speak(self, ctx, text: str):
-        """Озвучка ответа в войсе — бонус: если голос недоступен, ответ уже есть в чате."""
-        vc = ctx.guild.voice_client
-        try:
-            if not vc or not vc.is_connected():
-                vc = await asyncio.wait_for(ctx.author.voice.channel.connect(), timeout=15)
-            await say(vc, text)
-        except Exception as e:
-            print(f"[voice_ai] Озвучка не удалась: {e!r}")
-            await ctx.send("🔇 Не получилось озвучить ответ в войсе — он есть в чате.", delete_after=8)
-
     @commands.command(name="join", aliases=["j"], brief="Позвать бота в голосовой канал")
     async def voice_join(self, ctx):
         if not ctx.author.voice:
             await ctx.send("❌ Сначала зайди в голосовой канал!", delete_after=5); return
         if ctx.guild.voice_client:
-            await ctx.send("⚠️ Я уже в канале. Пиши `!ask <вопрос>`.", delete_after=5); return
+            await ctx.send(f"⚠️ Я уже в канале. Пиши {self.bot.user.mention} и вопрос.", delete_after=5); return
         try:
             await asyncio.wait_for(ctx.author.voice.channel.connect(), timeout=15)
         except Exception as e:
             await ctx.send(f"❌ Не удалось подключиться к войсу: {e}", delete_after=8); return
-        await ctx.send("✅ Подключился! Пиши `!ask <вопрос>`, и я отвечу голосом.")
+        await ctx.send(f"✅ Подключился! Пиши {self.bot.user.mention} и вопрос — отвечу ещё и голосом. "
+                       "А чтобы я слушал войс — `!listen`.")
 
     @commands.command(name="leave", aliases=["l", "выйти"], brief="Выгнать бота из войса")
     async def voice_leave(self, ctx):

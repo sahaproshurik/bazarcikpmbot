@@ -217,6 +217,8 @@ ACTIONS = [
     Action("predict", "predict", "предсказание", "что меня ждёт", FUN),
     Action("coinflip", "coinflip", "подбросить монетку без ставки", "подбрось монетку", FUN),
 
+    Action("join_voice", "listen", "зайти в войс к говорящему и слушать обращения «Базарчик»: зайди к нам, "
+           "приходи в войс, послушай нас", "зайди к нам в войс", VOICE),
     Action("stop_listening", "stoplisten", "перестать слушать войс, уйти из войса", "хватит слушать", VOICE),
     Action("voice", "aivoice", "сменить голос озвучки, voice: male или female", "говори мужским голосом", VOICE,
            (P("voice", "choice", kw="voice_name", choices=("male", "female")),)),
@@ -273,9 +275,10 @@ def _catalog() -> str:
 
 
 PARSE_PROMPT = (
-    "Ты — модуль разбора голосовых команд Discord-бота BazarčikPM. Тебе дают фразу, сказанную боту "
-    "(обращение «Базарчик» уже убрано), на русском, украинском, словацком или английском; распознавание "
-    "речи могло ошибиться в словах и именах. Реши, просит ли человек бота ВЫПОЛНИТЬ действие из списка "
+    "Ты — модуль разбора команд Discord-бота BazarčikPM. Тебе дают фразу, сказанную боту в войсе или "
+    "написанную ему в чате (обращение «Базарчик» или @упоминание уже убрано), на русском, украинском, словацком "
+    "или английском; распознавание речи могло ошибиться в словах и именах. Реши, просит ли человек бота "
+    "ВЫПОЛНИТЬ действие из списка "
     "или просто говорит и спрашивает.\n\n"
     "Ответь строго одним JSON-объектом, без пояснений и Markdown:\n"
     '{"action": "<ключ из списка | chat | forbidden | unsupported>", "args": {…}, "lang": "ru|uk|sk|en"}\n\n'
@@ -453,8 +456,9 @@ class RecordedMessage:
 class RecordingChannel:
     """Канал, который запоминает всё, что в него отправила команда, — из этого собирается голосовой итог."""
     def __init__(self, channel):
-        self._channel = channel
+        self._channel = getattr(channel, "_channel", channel)   # без матрёшки из обёрток
         self.sent: list = []
+        self.closed = False                # команда отработала — дальше ничего не копим (сессии !listen живут долго)
 
     def __getattr__(self, name):
         return getattr(self._channel, name)
@@ -466,10 +470,12 @@ class RecordingChannel:
         return hash(self._channel)
 
     async def send(self, content=None, **kw):
+        message = await self._channel.send(content, **kw)
+        if self.closed or message is None:
+            return message
         snapshot = Snapshot(content, [kw["embed"]] if kw.get("embed") else kw.get("embeds") or (), kw.get("view"))
         self.sent.append(snapshot)
-        message = await self._channel.send(content, **kw)
-        return RecordedMessage(message, snapshot) if message is not None else None
+        return RecordedMessage(message, snapshot)
 
 
 class VoiceMessage:
@@ -597,7 +603,8 @@ def confirm_embed(p: Pending, status: str = None) -> discord.Embed:
         e.add_field(name="Итог", value=status, inline=False)
         e.color = discord.Color.dark_grey()
     else:
-        e.set_footer(text=f"Скажи «да» или нажми кнопку • {CONFIRM_SEC} сек • только {p.user.display_name}")
+        e.set_footer(text=f"Ответь «да» голосом или в чат, или нажми кнопку • {CONFIRM_SEC} сек • "
+                          f"только {p.user.display_name}")
     return e
 
 
@@ -605,6 +612,7 @@ class JarvisCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.pending: dict = {}                    # (guild_id, user_id) → Pending
+        self.busy: set = set()                     # кому сейчас отвечаем в чате — второй запрос не запускаем
         self._locks = defaultdict(asyncio.Lock)
 
     # ── Вход из voice_listen ──────────────────────────────────
@@ -856,6 +864,7 @@ class JarvisCog(commands.Cog):
         except Exception as e:
             print(f"[jarvis] {p.user.display_name}: {p.trace} — команда упала: {e!r}")
             failure = tr("failed", p.lang)
+        ctx.channel.closed = True
         print(f"[jarvis] {p.user.display_name}: {p.trace} — {'ошибка' if failure else 'выполнено'} за "
               f"{time.monotonic() - started:.1f} с, сообщений в чат {len(ctx.channel.sent)}")
         footer = f"!{command.name}"
@@ -992,14 +1001,86 @@ class JarvisCog(commands.Cog):
         if remember and voice_cog is not None:
             voice_cog.remember(channel.guild.id, user.display_name, question, text)
 
+    # ── Обращение в чате: @BazarčikPM … ───────────────────────
+    def addressed(self, message) -> Optional[str]:
+        """Текст обращения без упоминания; None — сообщение не боту. Обращение — это упоминание бота
+        или его роли (её часто выбирают из подсказки Discord) и ответ на сообщение бота с пингом."""
+        me = self.bot.user
+        if me is None:
+            return None
+        roles = [r for r in getattr(message, "role_mentions", []) if getattr(r.tags, "bot_id", None) == me.id]
+        if not any(m.id == me.id for m in message.mentions) and not roles:
+            return None
+        text = re.sub(rf"<@!?{me.id}>", " ", message.content or "")
+        for role in roles:
+            text = text.replace(f"<@&{role.id}>", " ")
+        return " ".join(text.split())
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """В чате к боту обращаются только упоминанием: «@BazarčikPM сколько у меня денег»,
+        «@BazarčikPM зайди к нам в войс». Что это — команда или вопрос, решает Джарвис."""
+        if message.author.bot or message.guild is None or message.flags.is_voice_message:
+            return
+        prefix = self.bot.command_prefix if isinstance(self.bot.command_prefix, str) else "!"
+        if (message.content or "").lstrip().startswith(prefix):
+            return                                 # обычная команда — её обработает бот
+        question = self.addressed(message)
+        if question is not None:
+            await self.text_request(message.channel, message.author, question)
+
+    async def text_request(self, channel, user, question: str, source: str = "💬 чат"):
+        """Обращение в чате → тот же путь, что у войса: Джарвис, а если это вопрос — ответ ИИ.
+        Если бот сидит в войсе вместе с автором, ответ ещё и озвучивается."""
+        me = self.bot.user
+        if not question:
+            await channel.send(f"{user.mention}, да? Напиши после упоминания вопрос или просьбу: "
+                               f"`@{me.display_name} сколько у меня денег`, `@{me.display_name} зайди к нам в войс`. "
+                               "Что я умею — `!jarvis`.", delete_after=20)
+            return
+        key = (channel.guild.id, user.id)
+        if key in self.busy:
+            print(f"[jarvis] {user.display_name}: обращение в чате пропущено — ещё отвечаю на прошлое")
+            return
+        self.busy.add(key)
+        try:
+            vc, voice = channel.guild.voice_client, getattr(user, "voice", None)
+            together = (vc is not None and vc.is_connected() and voice is not None and voice.channel == vc.channel)
+            print(f"[jarvis] {user.display_name}: обращение в чате (слов: {len(question.split())})"
+                  + (", бот в войсе с автором — ответ ещё и голосом" if together else ""))
+            hint = f"@{me.display_name} … — чтобы спросить"
+            listen = self.bot.get_cog("VoiceListenCog")
+            async with channel.typing():
+                if listen is not None:
+                    await listen.reply(channel, user, question, vc if together else None, source, hint)
+                elif not await self.handle(channel, user, question, None, source):
+                    await self.plain_answer(channel, user, question, source, hint)
+        finally:
+            self.busy.discard(key)
+
+    async def plain_answer(self, channel, user, question, source, hint):
+        """Обычный ответ ИИ, если модуль прослушивания не загрузился (нет голосовых зависимостей)."""
+        voice_cog = self.bot.get_cog("VoiceAICog")
+        if voice_cog is None:
+            return
+        try:
+            text = await voice_cog.answer(channel.guild.id, user.display_name, question)
+        except ai.AIError as e:
+            await channel.send(f"❌ {e}", delete_after=15)
+            return
+        embed = answer_embed(user, question, text)
+        embed.set_footer(text=f"{source} • {hint}")
+        await channel.send(embed=embed)
+
     # ── !jarvis ───────────────────────────────────────────────
-    @commands.command(name="jarvis", aliases=["джарвис"], brief="Что бот умеет делать по голосовой команде")
+    @commands.command(name="jarvis", aliases=["джарвис"], brief="Что бот умеет по просьбе: голосом или через @")
     async def jarvis(self, ctx):
-        e = discord.Embed(title="🤖 Джарвис: голосовые команды", color=discord.Color.teal(), description=(
-            "Скажи в войсе (`!listen`) или голосовым сообщением **«Базарчик, …»** и попроси что-то сделать — "
-            "бот поймёт, выполнит команду от твоего имени и скажет итог. Просто вопрос — обычный ответ ИИ.\n"
-            f"🔐 — только после «да» голосом или кнопки ({CONFIRM_SEC} сек). Права те же, что у текстовых "
-            "команд; owner-команды (`!reload`, `!backup`, `!botstatus`) голосом не выполняются."))
+        me = self.bot.user.display_name if self.bot.user else "BazarčikPM"
+        e = discord.Embed(title="🤖 Джарвис: команды словами", color=discord.Color.teal(), description=(
+            f"Напиши в чат **@{me} …** или скажи в войсе (`!listen`) / голосовым сообщением **«Базарчик, …»** — "
+            "бот сам поймёт: выполнить команду от твоего имени или ответить на вопрос.\n"
+            f"🔐 — только после «да» (голосом, `@{me} да` или кнопкой, {CONFIRM_SEC} сек). Права те же, что у "
+            "текстовых команд; owner-команды (`!reload`, `!backup`, `!botstatus`) так не выполняются."))
         groups: dict = {}
         for a in ACTIONS:
             mark = " 🔐" if a.confirm is True else " 🔐 крупная" if a.confirm else ""
