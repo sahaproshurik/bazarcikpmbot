@@ -281,6 +281,7 @@ class ListenSession:
         self.started = self.last_wake = time.monotonic()
         self.alone_since = None
         self.followup: dict = {}          # uid → до какого момента ждём вопрос после «Базарчик?»
+        self.min_phrase: dict = {}        # uid → в окне строгого подтверждения фразы короче не распознаём
         self.stt_times: deque = deque()
         self.tasks: set = set()
         self.warned_quiet = self.warned_limit = self.stopping = False
@@ -300,7 +301,7 @@ class ListenSession:
         return (f"фраз {c.get('phrases', 0)}, детектор пропустил {c.get('to_bot', 0)}, "
                 f"без «Базарчик» (ждали ответ) {c.get('bypass', 0)}, запросов в Whisper {c.get('whisper', 0)}, "
                 f"вопросов боту {c.get('questions', 0)}, отсеял Whisper {c.get('dropped', 0)}, "
-                f"мимо лимита {c.get('limit', 0)}")
+                f"мимо лимита {c.get('limit', 0)}, коротких в окне подтверждения {c.get('short', 0)}")
 
     def start(self):
         self.sink.init(self.vc)
@@ -391,8 +392,14 @@ class ListenSession:
         self.count("phrases")
         waiting = started <= self.followup.get(user.id, 0)
         if waiting:
+            seconds, need = len(pcm) / BYTES_PER_SEC, self.min_phrase.get(user.id, 0)
+            if seconds < need:
+                self.count("short")
+                print(f"[listen] {tag}: фраза {seconds:.1f} с короче {need} с — в окне полного подтверждения "
+                      "короткое не распознаю")
+                return
             self.count("bypass")
-            print(f"[listen] {tag}: фраза {len(pcm) / BYTES_PER_SEC:.1f} с — бот ждёт ответ, идёт без детектора "
+            print(f"[listen] {tag}: фраза {seconds:.1f} с — бот ждёт ответ, идёт без детектора "
                   f"(окно ещё {self.followup[user.id] - started:.0f} с)")
         elif not await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с)"):
             return                        # «Базарчик» не прозвучал — фраза не уходит даже в Whisper

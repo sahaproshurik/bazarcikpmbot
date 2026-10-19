@@ -9,6 +9,7 @@ from typing import Optional, Union
 import discord
 from discord.ext import commands, tasks
 from data import player_warns, save_warns, mod_data, save_mod
+from names import MemberRef, find_member
 from purge_filters import ClearSpec, parse_clear, SCAN as CLEAR_SCAN
 from utils import parse_duration, fmt_duration, utcnow, log_action
 
@@ -23,7 +24,7 @@ WARN_ESCALATION = {
 }
 
 
-def hierarchy_error(ctx, member: discord.Member):
+def hierarchy_error(ctx, member: MemberRef):
     """Нельзя наказать себя, владельца, бота и того, чья роль не ниже твоей или моей."""
     if member == ctx.author:
         return "Нельзя применить к самому себе."
@@ -71,7 +72,7 @@ class ModerationCog(commands.Cog):
         help="`!mute @user [срок] [причина]` — срок: 30s, 10m, 2h, 1d, 1h30m (число = минуты), "
              "по умолчанию 10 минут, максимум 28 дней. Работает через нативный тайм-аут Discord.")
     @commands.has_permissions(moderate_members=True)
-    async def mute(self, ctx, member: discord.Member, duration: str = None, *, reason: str = "Не указана"):
+    async def mute(self, ctx, member: MemberRef, duration: str = None, *, reason: str = "Не указана"):
         if err := hierarchy_error(ctx, member):
             return await self.deny(ctx, err)
         td, reason = split_duration(duration, reason, "m")
@@ -84,7 +85,7 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="unmute", aliases=["untimeout"], brief="[Мод] Снять тайм-аут")
     @commands.has_permissions(moderate_members=True)
-    async def unmute(self, ctx, member: discord.Member, *, reason: str = "Не указана"):
+    async def unmute(self, ctx, member: MemberRef, *, reason: str = "Не указана"):
         legacy = discord.utils.get(ctx.guild.roles, name=LEGACY_MUTE_ROLE)
         had_legacy = legacy is not None and legacy in member.roles
         if not member.timed_out and not had_legacy:
@@ -103,7 +104,7 @@ class ModerationCog(commands.Cog):
              "Временный бан снимется автоматически, даже если бот перезапускался. "
              "Можно банить по ID тех, кого нет на сервере.")
     @commands.has_permissions(ban_members=True)
-    async def ban(self, ctx, user: Union[discord.Member, discord.User], duration: str = None, *,
+    async def ban(self, ctx, user: MemberRef(allow_users=True), duration: str = None, *,
                   reason: str = "Не указана"):
         if isinstance(user, discord.Member) and (err := hierarchy_error(ctx, user)):
             return await self.deny(ctx, err)
@@ -178,7 +179,7 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="kick", brief="[Мод] Кикнуть участника с сервера")
     @commands.has_permissions(kick_members=True)
-    async def kick(self, ctx, member: discord.Member, *, reason: str = "Не указана"):
+    async def kick(self, ctx, member: MemberRef, *, reason: str = "Не указана"):
         if err := hierarchy_error(ctx, member):
             return await self.deny(ctx, err)
         await dm(member, f"👢 Вас выгнали с **{ctx.guild.name}**.\nПричина: {reason}")
@@ -191,7 +192,7 @@ class ModerationCog(commands.Cog):
         name="warn", brief="[Мод] Выдать предупреждение",
         help="`!warn @user [причина]`. Автоэскалация: 3 варна — тайм-аут 1ч, 5 — тайм-аут 1д, 7 — кик.")
     @commands.has_permissions(moderate_members=True)
-    async def warn_member(self, ctx, member: discord.Member, *, reason: str = "Не указана"):
+    async def warn_member(self, ctx, member: MemberRef, *, reason: str = "Не указана"):
         if member.bot:
             return await self.deny(ctx, "Ботов не предупреждают.")
         warns = player_warns.setdefault(str(member.id), [])
@@ -221,7 +222,7 @@ class ModerationCog(commands.Cog):
         await ctx.send(text)
 
     @commands.command(name="warns", brief="Посмотреть предупреждения игрока")
-    async def check_warns(self, ctx, member: discord.Member = None):
+    async def check_warns(self, ctx, member: MemberRef = None):
         member = member or ctx.author
         warns  = player_warns.get(str(member.id), [])
         embed  = discord.Embed(title=f"⚠️ Варны {member.display_name}: {len(warns)}", color=discord.Color.orange())
@@ -240,7 +241,7 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="delwarn", brief="[Мод] Удалить один варн по номеру")
     @commands.has_permissions(moderate_members=True)
-    async def delwarn(self, ctx, member: discord.Member, number: int):
+    async def delwarn(self, ctx, member: MemberRef, number: int):
         warns = player_warns.get(str(member.id), [])
         if not 1 <= number <= len(warns):
             return await self.deny(ctx, f"У {member.display_name} нет варна #{number}.")
@@ -250,7 +251,7 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="clearwarn", brief="[Мод] Снять все варны с участника")
     @commands.has_permissions(moderate_members=True)
-    async def clear_warns(self, ctx, member: discord.Member):
+    async def clear_warns(self, ctx, member: MemberRef):
         player_warns[str(member.id)] = []
         save_warns()
         await ctx.send(f"✅ Все предупреждения {member.mention} сброшены.")
@@ -287,7 +288,7 @@ class ModerationCog(commands.Cog):
 
     async def purge_query(self, ctx, query: str):
         try:
-            spec = parse_clear(query)
+            spec = parse_clear(query, resolve=lambda name: find_member(ctx.guild, name, ctx.author).id)
         except ValueError as e:
             return await self.deny(ctx, f"{e}.")
         await self.purge(ctx, spec)
@@ -296,7 +297,7 @@ class ModerationCog(commands.Cog):
         name="clear", aliases=["purge"], brief="[Мод] Удалить сообщения: сколько, чьи, за какое время",
         help="`!clear [N] [фильтры]` — фильтры можно сочетать:\n"
              "• число — сколько удалить (1–500); без числа — до 500 подходящих\n"
-             "• `@user` (можно нескольких) или ID — только их сообщения\n"
+             "• `@user`, ID, ник или прозвище («от Петрухи», можно нескольких) — только их сообщения\n"
              "• `за 2ч` / `за 30m` / `за сегодня` / `за вчера` — за период\n"
              "• `после 18.10 12:00` / `до 20:00` / `до вчера` — с какого или до какого момента\n"
              "• `bots`, `humans`, `links`, `files` — от ботов, от людей, со ссылками, с файлами\n"
@@ -317,12 +318,12 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="clearuser", brief="[Мод] Удалить N последних сообщений участника (!clear @user N)")
     @commands.has_permissions(manage_messages=True)
-    async def clearuser(self, ctx, member: discord.Member, amount: int):
+    async def clearuser(self, ctx, member: MemberRef, amount: int):
         await self.purge_query(ctx, f"<@{member.id}> {amount}")
 
     @commands.command(name="clearuserday", brief="[Мод] Удалить сообщения участника за N дней (!clear @user за Nd)")
     @commands.has_permissions(manage_messages=True)
-    async def clearuserdays(self, ctx, member: discord.Member, days: int):
+    async def clearuserdays(self, ctx, member: MemberRef, days: int):
         if not 1 <= days <= 14:
             return await self.deny(ctx, "Дней от 1 до 14.")
         await self.purge_query(ctx, f"<@{member.id}> за {days}d")
@@ -401,14 +402,14 @@ class ModerationCog(commands.Cog):
     # ── Участники ─────────────────────────────────────────────
     @commands.command(name="nick", brief="[Мод] Сменить или сбросить ник участника")
     @commands.has_permissions(manage_nicknames=True)
-    async def nick(self, ctx, member: discord.Member, *, nickname: str = None):
+    async def nick(self, ctx, member: MemberRef, *, nickname: str = None):
         await member.edit(nick=nickname, reason=f"{ctx.author}")
         result = f"изменён на **{nickname}**" if nickname else "сброшен"
         await ctx.send(f"✏️ Ник {member.mention} {result}.", delete_after=10)
 
     @commands.command(name="role", brief="[Мод] Выдать/забрать роль участнику")
     @commands.has_permissions(manage_roles=True)
-    async def role(self, ctx, member: discord.Member, *, role: discord.Role):
+    async def role(self, ctx, member: MemberRef, *, role: discord.Role):
         if ctx.author != ctx.guild.owner and role >= ctx.author.top_role:
             return await self.deny(ctx, "Эта роль не ниже твоей — выдать её нельзя.")
         if role >= ctx.guild.me.top_role or role.managed:
@@ -438,7 +439,7 @@ class ModerationCog(commands.Cog):
 
     @commands.command(name="history", aliases=["modlog"], brief="[Мод] История наказаний участника")
     @commands.has_permissions(moderate_members=True)
-    async def history(self, ctx, user: Union[discord.Member, discord.User]):
+    async def history(self, ctx, user: MemberRef(allow_users=True)):
         cases = [c for c in mod_data["cases"] if c["target"] == user.id and c["guild"] == ctx.guild.id]
         e = discord.Embed(title=f"📁 История {user.display_name}: {len(cases)} кейсов", color=discord.Color.blurple())
         e.description = "\n".join(

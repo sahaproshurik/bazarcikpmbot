@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()   # до импорта cogs: config.py и ai.py читают переменные окружения при импорте
 
 from cogs.help_cmd import MyHelpCommand  # noqa: E402
+from names import AmbiguousMember         # noqa: E402
 from utils import safe_delete             # noqa: E402
 
 # ── Cogs to load ─────────────────────────────────────────────
@@ -110,7 +111,9 @@ class BazarcikBot(commands.Bot):
         elif isinstance(error, commands.MissingRequiredArgument):
             text = f"❌ Пропущен аргумент: `{error.param.name}`. Используй `!help {ctx.command}`"
         elif isinstance(error, (commands.MemberNotFound, commands.UserNotFound)):
-            text = "❌ Участник не найден."
+            text = f"❌ Участник «{discord.utils.escape_markdown(error.argument)}» не найден — проверь ник или прозвище (`!alias`)."
+        elif isinstance(error, AmbiguousMember):
+            text = f"❌ {error}"
         elif isinstance(error, (commands.BadArgument, commands.BadUnionArgument)):
             text = f"❌ Неверный аргумент! Используй `!help {ctx.command}`"
         elif isinstance(error, commands.CommandOnCooldown):

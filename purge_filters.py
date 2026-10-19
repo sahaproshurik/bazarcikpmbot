@@ -149,8 +149,20 @@ def _tokens(query: str):
     return [t for t in out if t[0]]
 
 
-def parse_clear(query: str, now: datetime = None) -> ClearSpec:
-    """Текст фильтров → ClearSpec. ValueError — с понятным текстом, что не так."""
+def _person(resolve, word: str):
+    """ID участника по имени или прозвищу; None — это не имя. Несколько похожих — понятная ошибка."""
+    try:
+        return resolve(word)
+    except LookupError:
+        return None
+    except ValueError as e:
+        raise ValueError(f"«{word}» — не понял, кого именно: {e}")
+
+
+def parse_clear(query: str, now: datetime = None, resolve=None) -> ClearSpec:
+    """Текст фильтров → ClearSpec. ValueError — с понятным текстом, что не так.
+    resolve(слово) → ID участника: так понимаются имена и прозвища («от Петрухи»). Он бросает LookupError,
+    если никого похожего нет, и ValueError с именами, если похожих несколько."""
     now_utc = now or datetime.now(timezone.utc)
     now = now_utc.astimezone(TZ)
     items = _tokens(query)
@@ -206,6 +218,8 @@ def parse_clear(query: str, now: datetime = None) -> ClearSpec:
             if spec.limit is not None:
                 raise ValueError(f"два числа: {spec.limit} и {low} — сколько удалить?")
             spec.limit = int(low)
+        elif resolve is not None and (uid := _person(resolve, tok)) is not None:
+            spec.users.append(uid)
         else:
             raise ValueError(f"не понял «{tok}». Фильтры: число, @участник, за 2ч, до/после 18.10 20:00, "
                              "bots, humans, links, files, \"текст\"")

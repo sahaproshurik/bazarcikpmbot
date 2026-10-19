@@ -6,8 +6,10 @@ names.py — как бот узнаёт людей по имени: нормал
 и алфавита («Петруха» = «Petrukha»), а stem() убирает падежное окончание («Петруху» = «Петруха»).
 Кто и как может менять прозвища — в cogs/aliases.py.
 """
+import difflib
 import re
 import unicodedata
+from discord.ext import commands
 from data import user_aliases, save_aliases
 
 MAX_ALIASES = 15            # прозвищ на человека (администраторам лимит не мешает)
@@ -107,3 +109,77 @@ def names_of(member) -> list:
     guild_id = getattr(getattr(member, "guild", None), "id", None)
     own = [member.display_name, member.name, getattr(member, "global_name", None) or ""]
     return [n for n in dict.fromkeys(own + (aliases_of(guild_id, member.id) if guild_id else [])) if n]
+
+
+# ── Кто имелся в виду ─────────────────────────────────────────
+def name_score(query: str, member) -> float:
+    """Насколько нормализованное имя query похоже на участника (ник, имя, прозвища): 0…1."""
+    best = 0.0
+    for raw in names_of(member):
+        name = norm_name(raw)
+        if not name:
+            continue
+        if name == query:
+            return 1.0
+        if stem(name) == stem(query):
+            best = max(best, 0.97)                  # «Петруху» → «Петруха»
+        if len(query) >= 3 and (name.startswith(query) or query in name):
+            best = max(best, 0.9)
+        best = max(best, difflib.SequenceMatcher(None, query, name).ratio())
+    return best
+
+
+def find_member(guild, query, author, voice_members=()):
+    """Участник по имени — как его написали или расслышал Whisper; сначала — те, кто в войсе.
+    LookupError — никого похожего, ValueError — несколько похожих (в тексте — их имена)."""
+    raw = str(query or "").strip().lstrip("@")
+    if raw.lower() in SELF_WORDS:
+        return author
+    q = norm_name(raw)
+    if not q:
+        raise LookupError(raw)
+    pool = {m.id: m for m in [*voice_members, *getattr(guild, "members", [])] if not getattr(m, "bot", False)}
+    in_voice = {m.id for m in voice_members}
+    for same in (lambda n: n == q, lambda n: stem(n) == stem(q)):   # точное имя/прозвище, потом с падежом
+        hits = [m for m in pool.values() if any(same(norm_name(n)) for n in names_of(m))]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise ValueError(" или ".join(m.display_name for m in hits[:3]))
+    scored = sorted(((name_score(q, m) + (0.05 if m.id in in_voice else 0), m) for m in pool.values()),
+                    key=lambda x: x[0], reverse=True)
+    if not scored or scored[0][0] < 0.75:
+        raise LookupError(raw)
+    close = [m for score, m in scored if score >= scored[0][0] - 0.08]
+    if len(close) > 1:
+        raise ValueError(" или ".join(m.display_name for m in close[:3]))
+    return scored[0][1]
+
+
+class AmbiguousMember(commands.BadArgument):
+    """Под имя подходят несколько участников — текст ошибки можно показать как есть."""
+
+
+class MemberRef(commands.Converter):
+    """Участник для текстовых команд: упоминание, ID, ник — а ещё прозвище, падеж и транслит
+    («!mute Петруха 10m», «!kick Васю»). allow_users — для !ban/!history: можно и того, кто не на сервере (по ID)."""
+
+    def __init__(self, allow_users: bool = False):
+        self.allow_users = allow_users
+
+    async def convert(self, ctx, argument: str):
+        if re.fullmatch(r"<@!?\d+>|\d{15,21}", argument.strip()):      # упоминание или ID — как в Discord
+            try:
+                return await commands.MemberConverter().convert(ctx, argument)
+            except commands.MemberNotFound:
+                if self.allow_users:
+                    return await commands.UserConverter().convert(ctx, argument)
+                raise
+        try:                                   # имя — по кэшу участников, без лишних запросов к Discord
+            return find_member(ctx.guild, argument, ctx.author)
+        except ValueError as e:
+            raise AmbiguousMember(f"Не понял, кого именно: {e}? Уточни упоминанием или прозвищем.")
+        except LookupError:
+            if self.allow_users:
+                return await commands.UserConverter().convert(ctx, argument)
+            raise commands.MemberNotFound(argument)

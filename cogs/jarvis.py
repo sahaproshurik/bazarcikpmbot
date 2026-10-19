@@ -15,7 +15,6 @@ jarvis.py — «Джарвис»: бот понимает голосовые п�
 Расшифровки нигде не сохраняются: в логи попадает только название действия.
 """
 import asyncio
-import difflib
 import json
 import re
 import time
@@ -29,13 +28,16 @@ from discord.ext import commands
 from discord.ext.commands.view import StringView
 import ai
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
-from names import norm_name, stem, SELF_WORDS, names_of, all_aliases
+from names import norm_name, all_aliases, find_member, name_score
 from config import TTS_SETTINGS
 from data import player_funds
 from utils import parse_duration, fmt_duration, utcnow
 from views import OwnedView, GREEN, RED
 
-CONFIRM_SEC     = 15         # столько ждём «да» голосом или кнопкой
+CONFIRM_SEC     = 15         # столько ждём «да» голосом или кнопкой (переводы, крупные ставки)
+STRICT          = "strict"   # строгое подтверждение — кик, бан, очистка: полная фраза
+STRICT_SEC      = 30         # окно на полную фразу; начинается, когда бот договорил вопрос и создал форму
+STRICT_MIN_SEC  = 1.2        # в окне строгого подтверждения фразы короче — короткие «да» — даже не распознаём
 BIG_BET_MIN     = 1000       # ставка от этой суммы и не меньше половины наличных — переспрашиваем
 VOICE_FORBIDDEN = {"reload", "backup", "botstatus", "status"}   # owner-команды: голосом никогда
 LANGS           = ("ru", "uk", "sk", "en")
@@ -45,6 +47,12 @@ LANGS           = ("ru", "uk", "sk", "en")
 PHRASES = {
     "confirm":     {"ru": "{what}? Скажи «да» или нажми кнопку.", "uk": "{what}? Скажи «так» або натисни кнопку.",
                     "sk": "{what}? Povedz áno alebo stlač tlačidlo.", "en": "{what}? Say yes or press the button."},
+    "confirm_strict": {"ru": "{what}? Чтобы подтвердить, скажи полностью: {phrase}.",
+                       "uk": "{what}? Щоб підтвердити, скажи повністю: {phrase}.",
+                       "sk": "{what}? Na potvrdenie povedz celé: {phrase}.",
+                       "en": "{what}? To confirm, say in full: {phrase}."},
+    "say_full":    {"ru": "Нужна полная фраза: «{phrase}».", "uk": "Потрібна повна фраза: «{phrase}».",
+                    "sk": "Treba celú vetu: „{phrase}“.", "en": "I need the full phrase: “{phrase}”."},
     "yes_no":      {"ru": "Скажи «да» или «нет».", "uk": "Скажи «так» або «ні».",
                     "sk": "Povedz áno alebo nie.", "en": "Say yes or no."},
     "cancelled":   {"ru": "Отменил.", "uk": "Скасував.", "sk": "Zrušené.", "en": "Cancelled."},
@@ -156,6 +164,7 @@ class Action:
     ask: dict = field(default_factory=dict)   # вопрос-подтверждение по языкам
     hierarchy: bool = False             # заранее проверить иерархию ролей (как в moderation)
     build: object = None                # (значения, сервер) → (args, kwargs, описание) — свой вызов команды
+    full: dict = field(default_factory=dict)  # для STRICT: фраза, которую надо сказать целиком, по языкам
 
 
 def clear_call(values: dict, guild):
@@ -189,7 +198,7 @@ MEMBER_OPT = P("member", "member", required=False)
 REASON = P("reason", "text", required=False, kw="reason")
 ECO, INFO, CASINO, WORK, FUN, VOICE, MOD = ("💰 Экономика", "👤 Профиль и сервер", "🎰 Казино",
                                            "💼 Работа и заработок", "🎭 Развлечения", "🎙️ Голос и ИИ",
-                                           "🛡️ Модерация (с подтверждением)")
+                                           "🛡️ Модерация")
 STATIONS = ("зал", "касса", "фри", "выдача", "сборка", "макавто", "гриль")
 NAMES = "🏷️ Прозвища"
 ALIAS = P("alias", "text", kw="alias")
@@ -259,26 +268,28 @@ ACTIONS = [
            "зовут Петю»)", "какие у меня прозвища", NAMES, (P("member", "member", required=False, kw="member"),)),
     Action("alias_list", "alias list", "показать все прозвища на сервере", "покажи все прозвища", NAMES),
 
+    # Мут, варн, медленный режим и замок чата — обратимы, выполняются сразу (права и иерархия — как у команды).
     Action("mute", "mute", "тайм-аут (мут) участнику", "замуть Петю на 10 минут", MOD,
-           (P("member", "member"), P("duration", "duration", required=False, default="10m"), REASON),
-           confirm=True, hierarchy=True,
-           ask={"ru": "Дать тайм-аут {member} {duration}", "uk": "Дати тайм-аут {member} {duration}",
-                "sk": "Dať timeout {member} {duration}", "en": "Time out {member} {duration}"}),
-    Action("unmute", "unmute", "снять тайм-аут", "размуть Петю", MOD, (P("member", "member"), REASON), confirm=True,
-           ask={"ru": "Снять тайм-аут с {member}", "uk": "Зняти тайм-аут з {member}",
-                "sk": "Zrušiť timeout pre {member}", "en": "Remove the timeout from {member}"}),
-    Action("warn", "warn", "выдать предупреждение", "выдай Пете варн за спам", MOD, (P("member", "member"), REASON),
-           confirm=True,
-           ask={"ru": "Выдать предупреждение {member}", "uk": "Видати попередження {member}",
-                "sk": "Dať varovanie {member}", "en": "Warn {member}"}),
-    Action("kick", "kick", "выгнать с сервера", "кикни Петю", MOD, (P("member", "member"), REASON), confirm=True,
+           (P("member", "member"), P("duration", "duration", required=False, default="10m"), REASON), hierarchy=True),
+    Action("unmute", "unmute", "снять тайм-аут", "размуть Петю", MOD, (P("member", "member"), REASON)),
+    Action("warn", "warn", "выдать предупреждение", "выдай Пете варн за спам", MOD, (P("member", "member"), REASON)),
+    Action("slowmode", "slowmode", "медленный режим чата, delay: срок или off", "включи медленный режим 30 секунд", MOD,
+           (P("delay", "delay"),)),
+    Action("lock", "lock", "закрыть этот чат для сообщений", "закрой чат", MOD, (REASON,)),
+    Action("unlock", "unlock", "открыть этот чат", "открой чат", MOD),
+    # Кик, бан и очистка необратимы — строгое подтверждение: полная фраза («подтверждаю, забань Petya»).
+    Action("kick", "kick", "выгнать с сервера", "кикни Петю", MOD, (P("member", "member"), REASON), confirm=STRICT,
            hierarchy=True,
            ask={"ru": "Выгнать {member} с сервера", "uk": "Вигнати {member} з сервера",
-                "sk": "Vyhodiť {member} zo servera", "en": "Kick {member} from the server"}),
+                "sk": "Vyhodiť {member} zo servera", "en": "Kick {member} from the server"},
+           full={"ru": "подтверждаю, кикни {member}", "uk": "підтверджую, кікни {member}",
+                 "sk": "potvrdzujem, vyhoď {member}", "en": "confirm, kick {member}"}),
     Action("ban", "ban", "забанить; без срока — навсегда", "забань Петю на неделю", MOD,
-           (P("member", "member"), P("duration", "duration", required=False), REASON), confirm=True, hierarchy=True,
+           (P("member", "member"), P("duration", "duration", required=False), REASON), confirm=STRICT, hierarchy=True,
            ask={"ru": "Забанить {member} {duration}", "uk": "Забанити {member} {duration}",
-                "sk": "Zabanovať {member} {duration}", "en": "Ban {member} {duration}"}),
+                "sk": "Zabanovať {member} {duration}", "en": "Ban {member} {duration}"},
+           full={"ru": "подтверждаю, забань {member}", "uk": "підтверджую, забань {member}",
+                 "sk": "potvrdzujem, zabanuj {member}", "en": "confirm, ban {member}"}),
     Action("clear", "clear", "удалить сообщения в этом чате; фильтры можно сочетать: amount — сколько (до 500), "
            "member — чьи, period — за какой срок (2h, 30m, 1d, сегодня, вчера), after / before — с какого / до какого "
            "момента (18.10 20:00, 12:00, вчера), kind — bots, humans, links или files, contains — текст в сообщении",
@@ -286,17 +297,11 @@ ACTIONS = [
            (P("amount", "amount", required=False), MEMBER_OPT, P("period", "raw", required=False),
             P("after", "raw", required=False), P("before", "raw", required=False),
             P("kind", "choice", required=False, choices=("bots", "humans", "links", "files")),
-            P("contains", "text", required=False)), confirm=True, build=lambda values, guild: clear_call(values, guild),
+            P("contains", "text", required=False)), confirm=STRICT, build=lambda values, guild: clear_call(values, guild),
            ask={"ru": "Удалить сообщения: {filters}", "uk": "Видалити повідомлення: {filters}",
-                "sk": "Vymazať správy: {filters}", "en": "Delete messages: {filters}"}),
-    Action("slowmode", "slowmode", "медленный режим чата, delay: срок или off", "включи медленный режим 30 секунд", MOD,
-           (P("delay", "delay"),), confirm=True, ask={lang: "{delay}" for lang in LANGS}),
-    Action("lock", "lock", "закрыть этот чат для сообщений", "закрой чат", MOD, (REASON,), confirm=True,
-           ask={"ru": "Закрыть этот чат для сообщений", "uk": "Закрити цей чат для повідомлень",
-                "sk": "Zamknúť tento chat", "en": "Lock this chat"}),
-    Action("unlock", "unlock", "открыть этот чат", "открой чат", MOD, confirm=True,
-           ask={"ru": "Открыть этот чат", "uk": "Відкрити цей чат", "sk": "Odomknúť tento chat",
-                "en": "Unlock this chat"}),
+                "sk": "Vymazať správy: {filters}", "en": "Delete messages: {filters}"},
+           full={"ru": "подтверждаю, удали сообщения", "uk": "підтверджую, видали повідомлення",
+                 "sk": "potvrdzujem, vymaž správy", "en": "confirm, delete the messages"}),
 ]
 ACTIONS_BY_KEY = {a.key: a for a in ACTIONS}
 
@@ -383,64 +388,45 @@ NO_WORDS = {"нет", "не", "неа", "отмена", "отмени", "сто�
             "no", "nope", "cancel", "stop"}
 
 
+FILLER_WORDS = {"ну", "а", "э", "ээ", "эм", "ой", "слушай", "базарчик"}
+CONFIRM_STEMS = ("podtverzhd", "pidtverdzh", "potvrdz", "confirm")          # подтверждаю / підтверджую / potvrdzujem
+VERB_STEMS = {"ban": ("ban",), "kick": ("kik", "kick", "vygn", "vign", "vyhod"),
+              "clear": ("udal", "vidal", "ochist", "vymaz", "delet", "clear")}
+
+
 def yes_no(text: str) -> Optional[bool]:
-    """True — «да», False — «нет», None — непонятно. Отказ сильнее: «да нет» — это нет."""
-    words = re.findall(r"\w+", (text or "").lower())[:4]
+    """True — «да», False — «нет», None — непонятно. Отказ сильнее: «да нет» — это нет. «Ну да» — да."""
+    words = re.findall(r"\w+", (text or "").lower())[:5]
     if any(w in NO_WORDS for w in words):
         return False
+    words = [w for w in words if w not in FILLER_WORDS]
     if words and words[0] in YES_WORDS:
         return True
     return None
 
 
-# ── Поиск участника по имени на слух ──────────────────────────
-# Имена сравниваются нормализованными (names.py): ник, имя аккаунта и прозвища из !alias.
+def strict_answer(text: str, p) -> Optional[bool]:
+    """Строгое подтверждение (кик, бан, очистка): True — сказали целиком «подтверждаю, забань Petya»,
+    False — отказ, None — неполно (короткое «да», без имени, без действия)."""
+    raw = re.findall(r"\w+", (text or "").lower())
+    if any(w in NO_WORDS for w in raw[:4]):
+        return False
+    words = [w for w in (norm_name(w) for w in raw) if w]
+    if not any(w.startswith(CONFIRM_STEMS) for w in words):
+        return None
+    if not any(stem in w for w in words for stem in VERB_STEMS.get(p.action.key, ())):
+        return None
+    member = p.values.get("member")
+    if member is not None and "{member}" in "".join(p.action.full.values()):   # у очистки участник — фильтр, не цель
+        candidates = words + [a + b for a, b in zip(words, words[1:])]     # «Петя Иванов» — два слова
+        if not any(name_score(w, member) >= 0.8 for w in candidates):
+            return None
+    return True
 
-def name_score(query: str, member) -> float:
-    best = 0.0
-    for raw in names_of(member):
-        name = norm_name(raw)
-        if not name:
-            continue
-        if name == query:
-            return 1.0
-        if stem(name) == stem(query):
-            best = max(best, 0.97)                  # «Петруху» → «Петруха»
-        if len(query) >= 3 and (name.startswith(query) or query in name):
-            best = max(best, 0.9)
-        best = max(best, difflib.SequenceMatcher(None, query, name).ratio())
-    return best
 
-
+# ── Поиск участника — names.py (ник, имя аккаунта, прозвища из !alias, падеж, транслит) ──
 class NotUnderstood(Exception):
     """Не хватает или не разобран параметр: текст сразу можно сказать человеку."""
-
-
-def find_member(guild, query, author, voice_members=()):
-    """Участник по имени, как его расслышал Whisper; сначала — те, кто в войсе.
-    LookupError — никого похожего, ValueError — несколько похожих (в тексте — их имена)."""
-    raw = str(query or "").strip().lstrip("@")
-    if raw.lower() in SELF_WORDS:
-        return author
-    q = norm_name(raw)
-    if not q:
-        raise LookupError(raw)
-    pool = {m.id: m for m in [*voice_members, *getattr(guild, "members", [])] if not getattr(m, "bot", False)}
-    in_voice = {m.id for m in voice_members}
-    for same in (lambda n: n == q, lambda n: stem(n) == stem(q)):   # точное имя/прозвище, потом с падежом
-        hits = [m for m in pool.values() if any(same(norm_name(n)) for n in names_of(m))]
-        if len(hits) == 1:
-            return hits[0]
-        if len(hits) > 1:
-            raise ValueError(" или ".join(m.display_name for m in hits[:3]))
-    scored = sorted(((name_score(q, m) + (0.05 if m.id in in_voice else 0), m) for m in pool.values()),
-                    key=lambda x: x[0], reverse=True)
-    if not scored or scored[0][0] < 0.75:
-        raise LookupError(raw)
-    close = [m for score, m in scored if score >= scored[0][0] - 0.08]
-    if len(close) > 1:
-        raise ValueError(" или ".join(m.display_name for m in close[:3]))
-    return scored[0][1]
 
 
 def parse_amount(value) -> Optional[int]:
@@ -601,10 +587,23 @@ class Pending:
     trace: str = ""                     # та же команда для логов — свободный текст только длиной
     created: float = field(default_factory=time.monotonic)
     answers: int = 0                    # сколько непонятных ответов было, пока ждали «да»
+    ready: bool = True                  # False — бот ещё договаривает вопрос, отвечать рано
+    window: int = CONFIRM_SEC
+    deadline: float = 0.0
 
     @property
     def age(self) -> float:
         return time.monotonic() - self.created
+
+    @property
+    def strict(self) -> bool:
+        return self.action.confirm == STRICT
+
+    @property
+    def phrase(self) -> str:
+        """Что сказать целиком для строгого подтверждения: «подтверждаю, забань Petya»."""
+        full = self.action.full
+        return (full.get(self.lang) or full.get("ru", "")).format(**self.values["_spoken"])
 
     @property
     def what(self) -> str:
@@ -616,9 +615,9 @@ class ConfirmView(OwnedView):
     deny_text = "Подтвердить может только тот, кто дал команду."
 
     def __init__(self, cog, pending: Pending):
-        super().__init__(pending.user, timeout=CONFIRM_SEC)
+        super().__init__(pending.user, timeout=pending.window)
         self.cog, self.pending = cog, pending
-        self.btn("Да, выполнить", self.on_yes, GREEN, emoji="✅")
+        self.btn("Подтверждаю" if pending.strict else "Да, выполнить", self.on_yes, GREEN, emoji="✅")
         self.btn("Отмена", self.on_no, RED, emoji="✖️")
 
     async def on_yes(self, interaction):
@@ -632,14 +631,18 @@ class ConfirmView(OwnedView):
 
 
 def confirm_embed(p: Pending, status: str = None) -> discord.Embed:
-    e = discord.Embed(title="🔐 Подтверди голосовую команду", color=discord.Color.orange(),
+    title = "🔐 Подтверди полной фразой" if p.strict else "🔐 Подтверди команду"
+    e = discord.Embed(title=title, color=discord.Color.red() if p.strict else discord.Color.orange(),
                       description=f"{p.what}?\n`{p.shown}`")
     e.set_author(name=f"{p.user.display_name}: {p.question}"[:256], icon_url=p.user.display_avatar.url)
     if status:
         e.add_field(name="Итог", value=status, inline=False)
         e.color = discord.Color.dark_grey()
+    elif p.strict:
+        e.add_field(name="Чтобы подтвердить, скажи или напиши (@бот …) целиком", value=f"«{p.phrase}»", inline=False)
+        e.set_footer(text=f"Короткое «да» не подходит • {p.window} сек • только {p.user.display_name}")
     else:
-        e.set_footer(text=f"Ответь «да» голосом или в чат, или нажми кнопку • {CONFIRM_SEC} сек • "
+        e.set_footer(text=f"Ответь «да» голосом или в чат, или нажми кнопку • {p.window} сек • "
                           f"только {p.user.display_name}")
     return e
 
@@ -656,13 +659,21 @@ class JarvisCog(commands.Cog):
         """True — фраза была командой (и уже обработана), False — пусть отвечает обычный ИИ."""
         pending = self.pending.get((channel.guild.id, user.id))
         if pending is not None and not pending.done:
-            answer = yes_no(question)
+            if not pending.ready:
+                print(f"[jarvis] {user.display_name}: фраза пришла, пока бот задаёт вопрос, — пропускаю")
+                return True
+            answer = strict_answer(question, pending) if pending.strict else yes_no(question)
             if answer is None:
                 pending.answers += 1
-                print(f"[jarvis] {user.display_name}: ответ на подтверждение непонятен (слов: {len(question.split())}, "
-                      f"{pending.answers}-й, прошло {pending.age:.0f} из {CONFIRM_SEC} с) — переспрашиваю")
-                await self.tell(channel, user, question, vc, source, tr("yes_no", pending.lang), remember=False)
-                self.await_answer(channel.guild, user)
+                print(f"[jarvis] {user.display_name}: ответ на подтверждение "
+                      f"{'неполный' if pending.strict else 'непонятен'} (слов: {len(question.split())}, "
+                      f"{pending.answers}-й, прошло {pending.age:.0f} из {pending.window} с)"
+                      + (" — подсказываю" if pending.answers == 1 else " — молча жду дальше"))
+                if pending.answers == 1:            # подсказываем один раз, дальше не тратим голос и запросы
+                    hint = (tr("say_full", pending.lang, phrase=pending.phrase) if pending.strict
+                            else tr("yes_no", pending.lang))
+                    await self.tell(channel, user, question, vc, source, hint, remember=False)
+                self.await_answer(pending)
             else:
                 await self.resolve(pending, answer)
             return True
@@ -951,26 +962,51 @@ class JarvisCog(commands.Cog):
 
     # ── Подтверждение ─────────────────────────────────────────
     async def ask_confirm(self, p: Pending):
-        old = self.pending.get((p.channel.guild.id, p.user.id))
+        """Сначала бот полностью озвучивает вопрос, потом создаёт форму в чате — и только с этого момента
+        идёт окно на ответ (CONFIRM_SEC, для кика/бана/очистки — STRICT_SEC и полная фраза)."""
+        key = (p.channel.guild.id, p.user.id)
+        old = self.pending.get(key)
         if old is not None and self.take(old):
             print(f"[jarvis] {old.user.display_name}: {old.trace} — заменено новой командой через {old.age:.0f} с")
             await self.close_confirm(old, "✖️ Заменено новой командой")
-        p.view = ConfirmView(self, p)
-        self.pending[(p.channel.guild.id, p.user.id)] = p
-        p.message = await p.channel.send(embed=confirm_embed(p), view=p.view)
-        self.await_answer(p.channel.guild, p.user)
-        print(f"[jarvis] {p.user.display_name}: жду подтверждения {p.trace} ({CONFIRM_SEC} с)")
-        await self.speak(p.vc, tr("confirm", p.lang, what=p.what))
+        p.window, p.ready = (STRICT_SEC if p.strict else CONFIRM_SEC), False
+        self.pending[key] = p
         if self.speaking(p.vc):
-            print(f"[jarvis] {p.user.display_name}: вопрос о подтверждении начал звучать через {p.age:.1f} с "
-                  f"после начала окна")
+            started = time.monotonic()
+            prompt = (tr("confirm_strict", p.lang, what=p.what, phrase=p.phrase) if p.strict
+                      else tr("confirm", p.lang, what=p.what))
+            await self.speak(p.vc, prompt)
+            await self.wait_playback(p.vc, limit=40)
+            print(f"[jarvis] {p.user.display_name}: вопрос о подтверждении договорён за {time.monotonic() - started:.1f} с")
+        if p.done:                                 # пока бот говорил, команду заменили новой
+            return
+        p.view = ConfirmView(self, p)
+        p.message = await p.channel.send(embed=confirm_embed(p), view=p.view)
+        p.created = time.monotonic()
+        p.deadline, p.ready = p.created + p.window, True
+        self.await_answer(p)
+        print(f"[jarvis] {p.user.display_name}: жду подтверждения {p.trace} ({p.window} с"
+              + (", нужна полная фраза)" if p.strict else ")"))
 
-    def await_answer(self, guild, user):
-        """Следующая фраза этого человека в войсе дойдёт до бота даже без «Базарчик» — это ответ «да/нет»."""
+    def session(self, guild):
         listen = self.bot.get_cog("VoiceListenCog")
-        session = getattr(listen, "sessions", {}).get(guild.id) if listen is not None else None
+        return getattr(listen, "sessions", {}).get(guild.id) if listen is not None else None
+
+    def await_answer(self, p: Pending):
+        """Ответ автора в войсе дойдёт до бота без «Базарчик» — но только до конца окна. В строгом окне
+        короткие фразы (обычное «да») даже не распознаются: так меньше лишних запросов к Whisper."""
+        session = self.session(p.channel.guild)
         if session is not None:
-            session.followup[user.id] = time.monotonic() + CONFIRM_SEC
+            session.followup[p.user.id] = p.deadline
+            if p.strict:
+                session.min_phrase[p.user.id] = STRICT_MIN_SEC
+
+    def close_answer(self, p: Pending):
+        """Подтверждение решено или истекло — следующая фраза снова нужна с «Базарчик»."""
+        session = self.session(p.channel.guild)
+        if session is not None:
+            session.followup.pop(p.user.id, None)
+            session.min_phrase.pop(p.user.id, None)
 
     def take(self, p: Pending) -> bool:
         """Подтверждение срабатывает один раз: голос, кнопка и тайм-аут не выполнят команду дважды."""
@@ -982,6 +1018,7 @@ class JarvisCog(commands.Cog):
             del self.pending[key]
         if p.view is not None:
             p.view.stop()
+        self.close_answer(p)
         return True
 
     async def resolve(self, p: Pending, yes: bool, interaction=None):
@@ -989,7 +1026,8 @@ class JarvisCog(commands.Cog):
             if interaction is not None and not interaction.response.is_done():
                 await interaction.response.send_message("Уже решено.", ephemeral=True)
             return
-        how = "кнопкой" if interaction is not None else "голосом"
+        how = ("кнопкой" if interaction is not None else "голосом" if p.source.startswith(("🎙", "🎤"))
+               else "в чате")
         status = f"✅ Подтверждено {how}" if yes else f"✖️ Отменено {how}"
         print(f"[jarvis] {p.user.display_name}: {p.trace} — {'подтверждено' if yes else 'отменено'} {how} "
               f"через {p.age:.1f} с, непонятных ответов {p.answers}")
@@ -1010,7 +1048,7 @@ class JarvisCog(commands.Cog):
         if self.take(p):
             print(f"[jarvis] {p.user.display_name}: {p.trace} — подтверждение истекло через {p.age:.0f} с, "
                   f"непонятных ответов {p.answers}")
-            await self.close_confirm(p, f"⌛ Не подтвердили за {CONFIRM_SEC} сек — отменено")
+            await self.close_confirm(p, f"⌛ Не подтвердили за {p.window} сек — отменено")
 
     @staticmethod
     async def close_confirm(p: Pending, status: str):
@@ -1137,11 +1175,15 @@ class JarvisCog(commands.Cog):
         e = discord.Embed(title="🤖 Джарвис: команды словами", color=discord.Color.teal(), description=(
             f"Напиши в чат **@{me} …** или скажи в войсе (`!listen`) / голосовым сообщением **«Базарчик, …»** — "
             "бот сам поймёт: выполнить команду от твоего имени или ответить на вопрос.\n"
-            f"🔐 — только после «да» (голосом, `@{me} да` или кнопкой, {CONFIRM_SEC} сек). Права те же, что у "
-            "текстовых команд; owner-команды (`!reload`, `!backup`, `!botstatus`) так не выполняются."))
+            f"🔐 — после «да» (голосом, `@{me} да` или кнопкой, {CONFIRM_SEC} сек).\n"
+            f"🔐🔐 — кик, бан, очистка: бот договаривает вопрос, создаёт форму, и {STRICT_SEC} сек ждёт полную "
+            "фразу вроде «подтверждаю, забань Petya» (короткое «да» не подходит) или кнопку.\n"
+            "Мут, варн, медленный режим и замок чата — сразу. Права те же, что у текстовых команд; "
+            "owner-команды (`!reload`, `!backup`, `!botstatus`) так не выполняются."))
         groups: dict = {}
         for a in ACTIONS:
-            mark = " 🔐" if a.confirm is True else " 🔐 крупная" if a.confirm else ""
+            mark = (" 🔐🔐" if a.confirm == STRICT else " 🔐" if a.confirm is True else " 🔐 крупная" if a.confirm
+                    else "")
             groups.setdefault(a.group, []).append(f"«{a.example}» → `!{a.command}`{mark}")
         for name, lines in groups.items():
             e.add_field(name=name, value="\n".join(lines)[:1024], inline=False)
