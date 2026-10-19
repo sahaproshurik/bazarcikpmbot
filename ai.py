@@ -13,7 +13,9 @@ from groq import (AsyncGroq, APIConnectionError, APIStatusError, AuthenticationE
                   BadRequestError, NotFoundError, PermissionDeniedError, RateLimitError)
 
 DEFAULT_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"]
-STT_MODELS     = ["whisper-large-v3-turbo", "whisper-large-v3"]
+# Полная large-v3 — первой: turbo (облегчённый декодер) заметно хуже на коротких фразах не на английском,
+# а у нас как раз они; скорость почти та же, в бесплатном тарифе Groq лимиты одинаковые. turbo — запасная.
+STT_MODELS     = ["whisper-large-v3", "whisper-large-v3-turbo"]
 
 
 class AIError(Exception):

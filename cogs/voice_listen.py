@@ -30,6 +30,7 @@ import diag
 import wake_word
 from cogs.voice_ai import say, answer_embed
 from data import guild_config, save_guild_cfg
+from names import all_aliases, norm_name
 
 try:
     import davey
@@ -86,6 +87,7 @@ READY_QUICK_SEC = 3          # готов быстрее — одно сообщ
 READY_NOTE_SEC  = 20         # детектор всё ещё грузится — говорим «готов», а фразы пока распознаёт Whisper
 READY_LATER     = "⏳ Напишу здесь, когда буду готов слушать."
 WAKE_HINT       = "Базарчик, BazarčikPM"
+HINT_CHARS      = 200        # подсказка Whisper — до 224 токенов, кириллица тратит их быстро: держим с запасом
 # Язык, который бот слушает (!язык) — один на сервер. Whisper получает его сам, а не угадывает: на коротких
 # фразах угадывание путало русский с английским, словацкий с чешским и стоило до трёх запросов на фразу.
 LISTEN_LANGS    = {"ru": "🇷🇺 русский", "uk": "🇺🇦 украинский", "sk": "🇸🇰 словацкий", "en": "🇬🇧 английский"}
@@ -127,13 +129,41 @@ def parse_lang(word: str):
     return next((lang for lang, words in LANG_WORDS.items() if word in words), None)
 
 
-async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiting: bool = False, info: dict = None):
+def whisper_hint(guild, members=()) -> str:
+    """Подсказка Whisper: как пишутся обращение и имена — люди в войсе, потом прозвища сервера.
+    Без неё Whisper записывает имя созвучным словом («Батки»), и Джарвис не находит, о ком речь."""
+    hint, seen = WAKE_HINT, set()
+    found = [m.display_name for m in members if not getattr(m, "bot", False)]
+    for uid, aliases in all_aliases(getattr(guild, "id", None)).items():
+        member = guild.get_member(uid) if hasattr(guild, "get_member") else None
+        if member is not None:
+            found += [member.display_name, *aliases]
+    for name in found:
+        name = re.sub(r"[^\w\s'’.-]", "", name).strip(" .-")       # без эмодзи и значков в нике
+        key = norm_name(name)
+        if not key or key in seen or len(hint) + len(name) + 2 > HINT_CHARS:
+            continue
+        seen.add(key)
+        hint += (". " if hint == WAKE_HINT else ", ") + name
+    return hint
+
+
+async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiting: bool = False, info: dict = None,
+                    hint: str = WAKE_HINT):
     """Распознаёт фразу на языке сервера и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
     waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения.
-    info — сюда для логов кладутся язык, уверенность Whisper и число запросов (без текста фразы)."""
+    info — сюда для логов кладутся язык, уверенность Whisper и число запросов (без текста фразы).
+    hint — подсказка с именами (whisper_hint); если Groq её не примет, повторяем с одним «Базарчик»."""
     info = {} if info is None else info
     info["requests"] = 1
-    heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+    try:
+        heard = await ai.transcribe(audio, filename, hint=hint, language=lang, detailed=True)
+    except ai.AIError as e:
+        if hint == WAKE_HINT:
+            raise
+        print(f"[listen] Подсказка с именами не принята ({e}) — распознаю без неё")
+        info["requests"] += 1
+        heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
     info.update(lang=lang, score=heard.score)
     question = split_wake(heard.text)
     if question is None and waiting and heard.text:
@@ -454,7 +484,8 @@ class ListenSession:
         del pcm
         info, lang = {}, listen_lang(self.guild.id)
         try:
-            question = await recognize(audio, "speech.wav", lang, waiting, info)
+            question = await recognize(audio, "speech.wav", lang, waiting, info,
+                                       whisper_hint(self.guild, getattr(self.vc.channel, "members", [])))
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return
@@ -664,7 +695,10 @@ class VoiceListenCog(commands.Cog):
         started, info, lang = time.monotonic(), {}, listen_lang(message.guild.id)
         try:
             audio = await attachment.read()
-            question = await recognize(audio, attachment.filename or "voice.ogg", lang, info=info)
+            voice = getattr(message.author, "voice", None)
+            people = getattr(getattr(voice, "channel", None), "members", None) or [message.author]
+            question = await recognize(audio, attachment.filename or "voice.ogg", lang, info=info,
+                                       hint=whisper_hint(message.guild, people))
         except (discord.HTTPException, ai.AIError) as e:
             print(f"[listen] Голосовое сообщение от {message.author.display_name} не распознано: {e}")
             return
