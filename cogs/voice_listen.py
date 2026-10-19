@@ -546,7 +546,7 @@ class VoiceListenCog(commands.Cog):
             asyncio.create_task(session.stop("модуль перезагружен"))
 
     async def reply(self, channel, user, question: str, vc=None, source: str = "",
-                    hint: str = "«Базарчик, …» — чтобы спросить"):
+                    hint: str = "«Базарчик, …» — чтобы спросить", message=None):
         """Ответ ИИ в чат и, если бот в войсе с автором, голосом. Сюда приходят и войс, и голосовые,
         и обращения в чате (@бот …) — сначала фразу смотрит Джарвис."""
         voice_cog = self.bot.get_cog("VoiceAICog")
@@ -554,7 +554,7 @@ class VoiceListenCog(commands.Cog):
             return
         async with self.locks[channel.guild.id]:
             jarvis = self.bot.get_cog("JarvisCog")     # просьба что-то сделать — выполняет Джарвис (cogs/jarvis.py)
-            if jarvis is not None and await jarvis.handle(channel, user, question, vc, source):
+            if jarvis is not None and await jarvis.handle(channel, user, question, vc, source, message=message):
                 return
             started = time.monotonic()
             try:

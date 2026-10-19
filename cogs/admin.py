@@ -426,7 +426,8 @@ class AdminCog(commands.Cog):
             "`!setlog #канал` — логи событий и наказаний\n"
             "`!automod [on|off|правило on/off]` • `!badword add/remove/list`\n"
             "`!autorole @роль` • `!welcome #канал текст` • `!rolemenu Заголовок | @роли`\n"
-            "`!nick @u [ник]` • `!role @u @роль`"))
+            "`!nick @u [ник]` • `!role @u @роль`\n"
+            "`!упоминания реакция|игнор|ответ` — когда о боте говорят в третьем лице"))
         e.add_field(name="Бот", inline=False, value=(
             "`!botstatus` — аптайм, пинг, модули, ИИ • `!backup` — данные в ЛС\n"
             "`!reload [модуль|all]` — перезагрузка кода (владелец бота)"))

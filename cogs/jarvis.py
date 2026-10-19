@@ -31,7 +31,7 @@ import whatsnew
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
 from names import norm_name, all_aliases, find_member, name_score
 from config import TTS_SETTINGS
-from data import player_funds
+from data import player_funds, guild_config, save_guild_cfg
 from utils import parse_duration, fmt_duration, utcnow
 from views import OwnedView, GREEN, RED
 
@@ -371,9 +371,13 @@ PARSE_PROMPT = (
     "ВЫПОЛНИТЬ действие из списка "
     "или просто говорит и спрашивает.\n\n"
     "Ответь строго одним JSON-объектом, без пояснений и Markdown:\n"
-    '{"action": "<ключ из списка | chat | forbidden | unsupported>", "args": {…}, "lang": "ru|uk|sk|en"}\n\n'
+    '{"action": "<ключ из списка | chat | aside | forbidden | unsupported>", "args": {…}, "lang": "ru|uk|sk|en"}\n\n'
     "chat — вопрос, разговор, подкол, просьба рассказать, объяснить или посоветовать: всё, что не просьба "
     "выполнить действие. Сомневаешься — выбирай chat.\n"
+    "aside — только для @упоминания в чате (строка «Как написано в чате»): бота упомянули, но обращаются НЕ к "
+    "нему, а говорят о нём другим, в третьем лице — «вот наш @бот теперь такое умеет прикиньте», «смотрите, что "
+    "@бот сделал», «@бот опять тупит ахах». Прямое обращение — вопрос, просьба или реплика самому боту («@бот, ты "
+    "как?», «@бот скажи…», «спасибо, @бот», «ты лучший, @бот») — это chat или действие. Сомневаешься — chat.\n"
     "forbidden — просят то, что голосом нельзя: перезагрузить модули, бэкап, статус бота, выдать или забрать "
     "деньги как админ, объявления, настройки сервера.\n"
     "unsupported — явно просят бота что-то сделать на сервере, но такого действия нет в списке.\n"
@@ -408,6 +412,27 @@ def extract_json(text: str) -> Optional[dict]:
             pass
         start = text.find("{", start + 1)
     return None
+
+
+ASIDE_EMOJI = "👀"
+ASIDE_MODES = {"react":  ("👀 реакция", "бот ставит 👀 и не отвечает."),
+               "ignore": ("🙈 игнор", "бот молчит — ни ответа, ни реакции."),
+               "answer": ("💬 ответ", "бот отвечает, как на любое обращение.")}
+ASIDE_WORDS = {"react":  ("реакция", "реакцию", "react", "reaction", "👀", "вкл", "on"),
+               "ignore": ("игнор", "игнорировать", "ignore", "молчать", "тихо", "silent"),
+               "answer": ("ответ", "отвечать", "answer", "reply", "выкл", "off")}
+
+
+def aside_mode(guild_id) -> str:
+    """Что делать, когда о боте говорят в третьем лице: react (по умолчанию), ignore или answer.
+    Хранится в guild_config: {"guild_id": {"mention_aside": "ignore"}}."""
+    mode = guild_config.get(str(guild_id), {}).get("mention_aside", "react")
+    return mode if mode in ASIDE_MODES else "react"
+
+
+def set_aside_mode(guild_id, mode: str):
+    guild_config.setdefault(str(guild_id), {})["mention_aside"] = mode
+    save_guild_cfg()
 
 
 def args_note(args: dict) -> str:
@@ -698,8 +723,9 @@ class JarvisCog(commands.Cog):
         self._locks = defaultdict(asyncio.Lock)
 
     # ── Вход из voice_listen ──────────────────────────────────
-    async def handle(self, channel, user, question: str, vc=None, source: str = "") -> bool:
-        """True — фраза была командой (и уже обработана), False — пусть отвечает обычный ИИ."""
+    async def handle(self, channel, user, question: str, vc=None, source: str = "", message=None) -> bool:
+        """True — фраза была командой (и уже обработана), False — пусть отвечает обычный ИИ.
+        message — сообщение чата с @упоминанием: по нему видно, говорят ли о боте в третьем лице."""
         pending = self.pending.get((channel.guild.id, user.id))
         if pending is not None and not pending.done:
             if not pending.ready:
@@ -722,11 +748,23 @@ class JarvisCog(commands.Cog):
             return True
         started = time.monotonic()
         try:
-            intent = await self.parse(channel.guild, user, question, vc)
+            intent = await self.parse(channel.guild, user, question, vc,
+                                      seen=self.as_seen(message) if message is not None else None)
         except ai.AIError as e:
             print(f"[jarvis] {user.display_name}: разбор фразы не удался ({e}) — отвечает обычный ИИ")
             return False
         took = time.monotonic() - started
+        if intent.action == "aside":
+            mode = aside_mode(channel.guild.id) if message is not None else "answer"
+            if mode == "ignore":
+                print(f"[jarvis] {user.display_name} → говорят о боте, не ему — молчу (!упоминания игнор), "
+                      f"разбор {took:.1f} с")
+                return True
+            if mode == "react" and await self.react(message):
+                print(f"[jarvis] {user.display_name} → говорят о боте, не ему — реакция {ASIDE_EMOJI}, "
+                      f"разбор {took:.1f} с")
+                return True
+            intent.action = "chat"                 # «ответ» или реакция не встала — отвечаем как обычно
         if intent.action == "chat":
             print(f"[jarvis] {user.display_name} → обычный вопрос [{intent.lang}], разбор {took:.1f} с")
             return False
@@ -739,7 +777,7 @@ class JarvisCog(commands.Cog):
             await self.tell(channel, user, question, vc, source, tr("failed", intent.lang))
         return True
 
-    async def parse(self, guild, user, question: str, vc) -> Intent:
+    async def parse(self, guild, user, question: str, vc, seen: str = None) -> Intent:
         voice_names = [m.display_name for m in self.voice_members(vc)][:25]
         context = ""
         voice_cog = self.bot.get_cog("VoiceAICog")
@@ -754,7 +792,8 @@ class JarvisCog(commands.Cog):
             if member is not None:
                 known.append(f"{member.display_name} — {', '.join(found[:6])}")
         prompt = (f"{context}Говорит: {user.display_name}\n"
-                  f"Участники в войсе: {', '.join(voice_names) or '—'}\n"
+                  + (f"Как написано в чате (@упоминание): {seen[:300]}\n" if seen else "")
+                  + f"Участники в войсе: {', '.join(voice_names) or '—'}\n"
                   + (f"Прозвища участников: {'; '.join(known)}\n" if known else "")
                   + f"Фраза: {question}")
         raw = await ai.ask(PARSE_PROMPT, prompt, max_tokens=400, temperature=0)
@@ -1167,9 +1206,28 @@ class JarvisCog(commands.Cog):
             return                                 # обычная команда — её обработает бот
         question = self.addressed(message)
         if question is not None:
-            await self.text_request(message.channel, message.author, question)
+            await self.text_request(message.channel, message.author, question, message=message)
 
-    async def text_request(self, channel, user, question: str, source: str = "💬 чат"):
+    def as_seen(self, message) -> str:
+        """Сообщение, как его видят в чате, с «@бот» на месте упоминания — по нему видно, к боту ли обращаются."""
+        text = message.content or ""
+        me = self.bot.user
+        if me is not None:
+            text = re.sub(rf"<@!?{me.id}>", "@бот", text)
+            for role in getattr(message, "role_mentions", []):
+                if getattr(role.tags, "bot_id", None) == me.id:
+                    text = text.replace(f"<@&{role.id}>", "@бот")
+        return " ".join(text.split())
+
+    async def react(self, message) -> bool:
+        try:
+            await message.add_reaction(ASIDE_EMOJI)
+            return True
+        except discord.HTTPException as e:         # нет права ставить реакции — ответим словами
+            print(f"[jarvis] Реакция не поставилась ({e}) — отвечаю как обычно")
+            return False
+
+    async def text_request(self, channel, user, question: str, source: str = "💬 чат", message=None):
         """Обращение в чате → тот же путь, что у войса: Джарвис, а если это вопрос — ответ ИИ.
         Если бот сидит в войсе вместе с автором, ответ ещё и озвучивается."""
         me = self.bot.user
@@ -1192,8 +1250,9 @@ class JarvisCog(commands.Cog):
             listen = self.bot.get_cog("VoiceListenCog")
             async with channel.typing():
                 if listen is not None:
-                    await listen.reply(channel, user, question, vc if together else None, source, hint)
-                elif not await self.handle(channel, user, question, None, source):
+                    await listen.reply(channel, user, question, vc if together else None, source, hint,
+                                       message=message)
+                elif not await self.handle(channel, user, question, None, source, message=message):
                     await self.plain_answer(channel, user, question, source, hint)
         finally:
             self.busy.discard(key)
@@ -1213,6 +1272,35 @@ class JarvisCog(commands.Cog):
         await channel.send(embed=embed)
 
     # ── !jarvis ───────────────────────────────────────────────
+    @commands.command(name="mentions", aliases=["упоминания"], brief="Как бот реагирует, когда о нём говорят, а не ему",
+                      help="Бота упомянули в третьем лице («вот наш @бот теперь такое умеет»). Что делает бот:\n"
+                           "`!упоминания реакция` — ставит 👀 и не отвечает (по умолчанию);\n"
+                           "`!упоминания игнор` — молчит совсем;\n"
+                           "`!упоминания ответ` — отвечает, как на любое обращение.\n"
+                           "`!упоминания` — что сейчас. Менять — администраторам. Прямые вопросы и просьбы к боту "
+                           "это не затрагивает.")
+    @commands.guild_only()
+    async def mentions(self, ctx, *, state: str = None):
+        from cogs.aliases import is_admin
+        if state is not None:
+            mode = next((m for m, words in ASIDE_WORDS.items() if state.strip().lower() in words), None)
+            if mode is None:
+                return await ctx.send("❌ Варианты: `!упоминания реакция`, `!упоминания игнор`, `!упоминания ответ`.",
+                                      delete_after=10)
+            if not is_admin(ctx.author, ctx.channel):
+                return await ctx.send("❌ Менять это могут только администраторы.", delete_after=10)
+            set_aside_mode(ctx.guild.id, mode)
+            print(f"[jarvis] {ctx.author.display_name}: упоминания в третьем лице → {mode}")
+        mode = aside_mode(ctx.guild.id)
+        title, about = ASIDE_MODES[mode]
+        e = discord.Embed(title=f"Упоминания в третьем лице: {title}", color=discord.Color.teal(), description=(
+            f"Бота упомянули, но говорят о нём, а не ему («вот наш @бот теперь такое умеет»): {about}\n"
+            "Прямые вопросы и просьбы к боту — как обычно.\n\n"
+            + "\n".join(f"`!упоминания {words[0]}` — {t}" for (m, words), (t, _) in
+                         zip(ASIDE_WORDS.items(), ASIDE_MODES.values()))
+            + "\nМенять — администраторам."))
+        await ctx.send(embed=e)
+
     @commands.command(name="jarvis", aliases=["джарвис"], brief="Что бот умеет по просьбе: голосом или через @")
     async def jarvis(self, ctx):
         me = self.bot.user.display_name if self.bot.user else "BazarčikPM"
