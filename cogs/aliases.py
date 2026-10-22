@@ -14,10 +14,12 @@ from typing import Optional
 import discord
 from discord.ext import commands
 import names
-from views import GREEN, RED
+from views import GREEN, GREY, RED, OwnedView
 
 APPROVAL_SEC = 3600
+CONFIRM_SEC = 60                    # на «точно стереть все прозвища?»
 COLOR = discord.Color.blurple()
+ALL_WORDS = {"все", "всё", "все прозвища", "всі", "усі", "all", "všetky", "vsetky"}
 
 
 def is_admin(member, channel) -> bool:
@@ -184,6 +186,33 @@ class ApprovalView(discord.ui.View):
                 pass
 
 
+class ClearConfirmView(OwnedView):
+    """Контрольный вопрос перед тем, как стереть все прозвища участника: ответить может только автор команды."""
+    deny_text = "Подтвердить может только тот, кто дал команду."
+
+    def __init__(self, cog, ctx, change: Change):
+        super().__init__(ctx.author, timeout=CONFIRM_SEC)
+        self.cog, self.ctx, self.change, self.message = cog, ctx, change, None
+        self.btn("Да, стереть", self.on_yes, RED, emoji="🧽")
+        self.btn("Отмена", self.on_no, GREY, emoji="✖️")
+
+    async def on_yes(self, interaction):
+        self.stop()
+        await interaction.response.edit_message(content=f"✅ Подтверждено: {self.change.what}.", view=None)
+        await self.cog.change(self.ctx, self.change)
+
+    async def on_no(self, interaction):
+        self.stop()
+        await interaction.response.edit_message(content="✖️ Отменено — прозвища остались.", view=None)
+
+    async def on_timeout(self):
+        if self.message is not None:
+            try:
+                await self.message.edit(content="⌛ Не подтвердили — прозвища остались.", view=None)
+            except discord.HTTPException:
+                pass
+
+
 def request_embed(change: Change, status: str = None) -> discord.Embed:
     e = discord.Embed(title="🏷️ Запрос на прозвище", color=discord.Color.orange() if not status else COLOR,
                       description=f"{change.author.mention} хочет {change.what}.")
@@ -226,16 +255,20 @@ class AliasCog(commands.Cog):
              "`!alias clear [@user]` — убрать все.\n"
              "Администраторы меняют прозвища любого участника сразу. Остальные — только свои и только "
              "с одобрения администратора (бот пришлёт запрос с кнопками).\n"
-             "Можно и словами: «@BazarčikPM запомни, что Петруха — это Петя», «зови меня Сашка».")
+             "Можно и словами: «@BazarčikPM запомни @Петя как Петруха», «зови меня Сашка», "
+             "«забудь у @Петя прозвище Петруха», «забудь все прозвища @Петя», «как ты запомнил @Петя», "
+             "«кого как ты запомнил».")
     @commands.guild_only()
     async def alias(self, ctx, *, member: discord.Member = None):
         member = member or ctx.author
         if member.id != ctx.author.id and not is_admin(ctx.author, ctx.channel):
             return await ctx.send("❌ Чужие прозвища смотрят только администраторы. Свои — `!alias`.", delete_after=10)
         found = names.aliases_of(ctx.guild.id, member.id)
-        e = discord.Embed(title=f"🏷️ {member.display_name}", color=COLOR, description=(
-            "Откликается на: " + ", ".join(f"«{discord.utils.escape_markdown(a)}»" for a in found) if found
-            else "Прозвищ пока нет. Добавить: `!alias add прозвище`"))
+        own = [n for n in dict.fromkeys((member.display_name, member.name, getattr(member, "global_name", None)))
+               if n]
+        e = discord.Embed(title=f"🏷️ Как я запомнил {member.display_name}", color=COLOR, description=(
+            "Прозвища: " + quoted(found) if found else "Прозвищ пока нет. Добавить: `!alias add прозвище`"))
+        e.add_field(name="Узнаю и по имени в Discord", value=quoted(own), inline=False)
         await ctx.send(embed=e)
 
     @alias.command(name="add", aliases=["добавить"], brief="Добавить прозвище")
@@ -257,6 +290,8 @@ class AliasCog(commands.Cog):
     @alias.command(name="remove", aliases=["del", "убрать"], brief="Убрать прозвище")
     @commands.guild_only()
     async def alias_remove(self, ctx, member: Optional[discord.Member] = None, *, alias: str):
+        if clean(alias).lower() in ALL_WORDS:          # «забудь все прозвища Пети» — это clear, а не прозвище «все»
+            return await ctx.invoke(self.alias_clear, member)
         aliases = names.split_aliases(alias) or [clean(alias)]
         if member is None:                  # «убери прозвище Петруха» — у кого оно есть
             owner = names.alias_owner(ctx.guild.id, aliases[0])
@@ -275,9 +310,17 @@ class AliasCog(commands.Cog):
     @commands.guild_only()
     async def alias_clear(self, ctx, member: discord.Member = None):
         member = member or ctx.author
-        if not names.aliases_of(ctx.guild.id, member.id):
+        found = names.aliases_of(ctx.guild.id, member.id)
+        if not found:
             return await ctx.send(f"❌ У {member.display_name} нет прозвищ.", delete_after=8)
-        await self.change(ctx, Change("clear", member, [], ctx.author))
+        if member.id != ctx.author.id and not is_admin(ctx.author, ctx.channel):
+            return await ctx.send("❌ Чужие прозвища меняют только администраторы.", delete_after=12)
+        change = Change("clear", member, [], ctx.author)
+        if getattr(ctx, "confirmed", False):           # Джарвис уже спросил «точно?» голосом или в чате
+            return await self.change(ctx, change)
+        view = ClearConfirmView(self, ctx, change)
+        view.message = await ctx.send(f"⚠️ Точно {change.what}? Сейчас: {quoted(found)}. Вернуть их можно будет "
+                                      f"только заново, по одному.", view=view)
 
     @alias.command(name="list", aliases=["все", "all"], brief="Все прозвища на сервере")
     @commands.guild_only()
@@ -291,7 +334,7 @@ class AliasCog(commands.Cog):
             if member is not None:
                 lines.append(f"**{discord.utils.escape_markdown(member.display_name)}** — "
                              + ", ".join(discord.utils.escape_markdown(a) for a in found))
-        e = discord.Embed(title="🏷️ Прозвища на сервере", color=COLOR,
+        e = discord.Embed(title="🏷️ Кого как я запомнил", color=COLOR,
                           description="\n".join(lines)[:4000] or "Пока ни у кого нет прозвищ.")
         await ctx.send(embed=e)
 

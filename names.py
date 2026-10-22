@@ -57,13 +57,28 @@ def loose_name(text: str) -> str:
 
 
 ALIAS_SPLIT = re.compile(r"\s*(?:[,;\n]|\s(?:и|і|та|або|или|and|or|alebo|a)\s)\s*", re.IGNORECASE)
+# Связки перед прозвищем: «запомни @Петю как Сыр», «…, что он — Сыр», «под именем Сыр», «as Cheese» → «Сыр»
+ALIAS_LEAD = re.compile(
+    r"(?:[—–=:-]+|(?:как|это|что|он|она|теперь|тоже|под\s+именем|по\s+имени|по\s+прозвищу|по\s+кличке|с\s+прозвищем|"
+    r"прозвищем|прозвище|кличкой|кличку|кличка|погонялом|погоняло|именем|як|це|що|він|вона|під\s+ім['’]ям|"
+    r"на\s+ім['’]я|прізвиськом|прізвисько|ako|je|že|prezývkou|prezývku|prezývka|menom|as|is|that|called|named|"
+    r"nickname|alias)(?=[\s—–=:-]))\s*", re.IGNORECASE)
+
+
+def strip_lead(alias: str) -> str:
+    """Прозвище без связок впереди: «как Сыр» → «Сыр», «что он — Сыр» → «Сыр». Само слово-связку
+    («Как») не трогаем — если после неё ничего не остаётся."""
+    while (m := ALIAS_LEAD.match(alias)) and alias[m.end():].strip():
+        alias = alias[m.end():]
+    return alias
 
 
 def split_aliases(text: str) -> list:
     """«Петруха, Петюня и Петро» → три прозвища, повторы (с точностью до падежа и алфавита) убраны.
-    Целиком в кавычках («Пат и Паташон») — одно прозвище."""
+    Связки впереди («как Петруха», «под именем Петруха») отбрасываются. Целиком в кавычках («Пат и Паташон»,
+    «Как Сыр») — одно прозвище как есть."""
     quoted = re.fullmatch(r"\s*[«\"“](.+)[»\"”]\s*", text or "")
-    parts = [quoted.group(1)] if quoted else ALIAS_SPLIT.split(text or "")
+    parts = [quoted.group(1)] if quoted else [strip_lead(clean_alias(p)) for p in ALIAS_SPLIT.split(text or "")]
     found = []
     for part in parts:
         alias = clean_alias(part)

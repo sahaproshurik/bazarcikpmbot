@@ -229,6 +229,8 @@ ECO, INFO, CASINO, WORK, FUN, VOICE, MOD = ("💰 Экономика", "👤 П�
 STATIONS = ("зал", "касса", "фри", "выдача", "сборка", "макавто", "гриль")
 NAMES = "🏷️ Прозвища"
 ALIAS = P("alias", "text", kw="alias")
+# «Забудь …» про прозвище или конкретного человека — это не очистка памяти разговора (forget = !aiclear)
+ABOUT_ALIAS = re.compile(r"прозвищ|кличк|погонял|прізвиськ|prez[ýy]vk|nickname|alias|<@!?\d+>", re.IGNORECASE)
 
 ACTIONS = [
     Action("balance", "money", "свой баланс, сколько у меня денег", "сколько у меня денег", ECO),
@@ -300,7 +302,9 @@ ACTIONS = [
            "без language — показать текущий: «слушай нас на словацком», «переключи прослушку на английский», «на "
            "каком языке ты слушаешь»", "слушай нас на словацком", VOICE,
            (P("language", "choice", required=False, kw="language", choices=("ru", "uk", "sk", "en")),)),
-    Action("forget", "aiclear", "очистить память разговора ИИ", "забудь наш разговор", VOICE),
+    Action("forget", "aiclear", "очистить общую память разговора ИИ — только про разговор: «забудь наш разговор», "
+           "«забудь, о чём мы говорили». Забыть прозвище — это alias_remove, а не forget",
+           "забудь наш разговор", VOICE),
     Action("reply_mode", "mode", "режим, в котором бот отвечает человеку: mode — standard (обычный, на языке "
            "собеседника), admin («язык админов», транслит латиницей) или yurchik (в манере Юрчика); member — кому "
            "(не назван — себе). Без mode — показать режим: «отвечай мне как юрчик», «включи Пете язык админов», "
@@ -309,17 +313,24 @@ ACTIONS = [
                                                       choices=("standard", "admin", "yurchik"))),
            build=lambda values, guild: mode_call(values, guild)),
 
-    Action("alias_add", "alias add", "запомнить прозвище участника: «запомни, что Петруха — это Петя», «зови меня "
-           "Сашка»; member — кому (не назван — себе), alias — новое прозвище, несколько — через запятую («зови Петю "
-           "Петруха и Петюня» → \"Петруха, Петюня\")", "запомни, что Петруха — это Петя",
+    Action("alias_add", "alias add", "запомнить прозвище участника: «запомни, что Петруха — это Петя», «запомни "
+           "Петю как Сыр» (alias — \"Сыр\", без «как»), «зови меня Сашка»; member — кому (не назван — себе), alias — "
+           "новое прозвище, несколько — через запятую («зови Петю Петруха и Петюня» → \"Петруха, Петюня\")",
+           "запомни, что Петруха — это Петя", NAMES, (MEMBER_OPT, ALIAS)),
+    Action("alias_remove", "alias remove", "забыть ОДНО или несколько прозвищ: «забудь, что я Сашка», «убери "
+           "прозвище Петруха», «забудь у Пети прозвище Сыр», «Петя больше не Сыр»; member — у кого (можно не "
+           "называть), alias — какое прозвище, несколько — через запятую", "забудь у Пети прозвище Сыр",
            NAMES, (MEMBER_OPT, ALIAS)),
-    Action("alias_remove", "alias remove", "забыть прозвище: «забудь, что я Сашка», «убери прозвище Петруха»; "
-           "member — у кого (можно не называть), alias — какое прозвище, несколько — через запятую",
-           "убери прозвище Петруха",
-           NAMES, (MEMBER_OPT, ALIAS)),
-    Action("alias_show", "alias", "показать прозвища: свои («какие у меня прозвища») или участника («как ещё "
-           "зовут Петю»)", "какие у меня прозвища", NAMES, (P("member", "member", required=False, kw="member"),)),
-    Action("alias_list", "alias list", "показать все прозвища на сервере", "покажи все прозвища", NAMES),
+    Action("alias_clear", "alias clear", "забыть ВСЕ прозвища участника: «забудь все прозвища Пети», «сотри мои "
+           "прозвища»; member — у кого (не назван — у себя)", "забудь все прозвища Пети", NAMES,
+           (P("member", "member", required=False, default="me"),), confirm=True,
+           ask={"ru": "Стереть все прозвища у {member}", "uk": "Стерти всі прізвиська у {member}",
+                "sk": "Vymazať všetky prezývky používateľa {member}", "en": "Erase all nicknames of {member}"}),
+    Action("alias_show", "alias", "показать, как бот запомнил одного человека: свои прозвища («какие у меня "
+           "прозвища») или участника («как ты запомнил Петю», «как ещё зовут Петю», «под какими именами ты знаешь "
+           "Петю»)", "как ты запомнил Петю", NAMES, (P("member", "member", required=False, kw="member"),)),
+    Action("alias_list", "alias list", "показать, кого как бот запомнил, — все прозвища на сервере: «кого как ты "
+           "запомнил», «покажи все прозвища»", "кого как ты запомнил", NAMES),
     Action("translit", "translit", "переписать обычными буквами текст, написанный транслитом (русские или "
            "украинские слова латиницей): «переведи с транслита: privet kak dela»; text — сам текст ровно как "
            "написан, латиницей", "переведи с транслита: privet kak dela", VOICE, (P("text", "text", kw="text"),)),
@@ -410,7 +421,8 @@ PARSE_PROMPT = (
     "member — имя участника; если похоже на кого-то из списка участников или на прозвище из списка прозвищ, "
     "напиши основное имя участника точно как в списке; сам говорящий — \"me\"; упомянут в чате как <@число> — "
     "верни это упоминание как есть.\n"
-    "alias — прозвище ровно как его назвали, в именительном падеже («Петруху» → \"Петруха\"); несколько — "
+    "alias — только само прозвище, без связок «как», «это», «что он», «под именем» («запомни <@123> как сыр» → "
+    "member \"<@123>\", alias \"сыр\"), в именительном падеже («Петруху» → \"Петруха\"); несколько — "
     "через запятую; русское или украинское слово, написанное транслитом, — кириллицей («podkidysh» → "
     "\"подкидыш\"), а настоящие латинские прозвища («Ďuro», «Sponsor») — как есть.\n"
     "amount — целое число (тысяча = 1000, «пять кусков» = 5000). bet — целое число, \"all\" (ва-банк) "
@@ -810,6 +822,9 @@ class JarvisCog(commands.Cog):
         took = time.monotonic() - started
         if lang:
             intent.lang = lang
+        if intent.action == "forget" and ABOUT_ALIAS.search(question):
+            print(f"[jarvis] {user.display_name}: разбор выбрал forget, но речь о прозвище/участнике — alias_remove")
+            intent.action = "alias_remove"         # «забудь у @Пети прозвище Сыр» — не стирать всю память чата
         if intent.action == "aside":
             mode = aside_mode(channel.guild.id) if message is not None else "answer"
             if mode == "ignore":
@@ -1055,6 +1070,7 @@ class JarvisCog(commands.Cog):
             print(f"[jarvis] {p.user.display_name}: {p.trace} не выполнено — команды нет или она owner-only")
             return await reply(tr("unsupported", p.lang))
         ctx = make_context(self.bot, p.user, p.channel, command)
+        ctx.confirmed = p.view is not None         # уже спросили «точно?» — команда не переспрашивает (!alias clear)
         if (denied := await self.check_rights(ctx, command, p.lang)) is not None:
             print(f"[jarvis] {p.user.display_name}: {p.trace} не выполнено — права пропали перед выполнением")
             return await reply(denied)
