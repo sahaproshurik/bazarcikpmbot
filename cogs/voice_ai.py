@@ -29,6 +29,17 @@ def generate_greeting():
             print(f"[AUDIO] Ошибка создания файла: {e}")
 
 
+def _auto_categories(guild) -> set:
+    """Категории, где живут авто-комнаты: явно заданные плюс категории входов с None."""
+    cats = set()
+    for entry_id, cat_id in AUTO_CHANNELS.items():
+        if cat_id is None:
+            entry = guild.get_channel(entry_id)
+            cat_id = entry.category_id if entry else None
+        if cat_id: cats.add(cat_id)
+    return cats
+
+
 def answer_embed(user, question: str, reply: str) -> discord.Embed:
     embed = discord.Embed(description=reply[:4000], color=discord.Color.teal())
     embed.set_author(name=f"{user.display_name}: {question}"[:256], icon_url=user.display_avatar.url)
@@ -310,7 +321,8 @@ class VoiceAICog(commands.Cog):
         # === Создание авто-канала ===
         if after.channel and after.channel.id in AUTO_CHANNELS:
             guild    = member.guild
-            category = guild.get_channel(AUTO_CHANNELS[after.channel.id])
+            cat_id   = AUTO_CHANNELS[after.channel.id] or after.channel.category_id
+            category = guild.get_channel(cat_id) if cat_id else None
             if category is None:
                 print(f"[voice] Категория для авто-канала {after.channel.id} не найдена")
                 return
@@ -394,7 +406,7 @@ class VoiceAICog(commands.Cog):
         # === Удаление пустого канала ===
         if before.channel:
             if before.channel.id in AUTO_CHANNELS: return
-            if before.channel.category_id not in AUTO_CHANNELS.values(): return
+            if before.channel.category_id not in _auto_categories(member.guild): return
             if not re.search(r"\d+$", before.channel.name): return
 
             await asyncio.sleep(5)
