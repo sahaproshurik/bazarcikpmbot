@@ -29,15 +29,42 @@ def generate_greeting():
             print(f"[AUDIO] Ошибка создания файла: {e}")
 
 
-def _auto_categories(guild) -> set:
-    """Категории, где живут авто-комнаты: явно заданные плюс категории входов с None."""
-    cats = set()
+ROOM_SEPARATORS = {"🔊 Poslucháreň": "_ZP"}   # имя комнаты → что ставить перед номером (по умолчанию пробел)
+ROOM_COOLDOWN   = 10                          # секунд между комнатами одного участника
+
+
+def _room_pattern(entry_name: str) -> tuple:
+    """Имя входа → (база, разделитель): «🔊Create Poslucháreň» → комнаты «🔊 Poslucháreň_ZP1»,
+    «🎮Create Hračka» → «🎮 Hračka 1»."""
+    base = " ".join(entry_name.replace("Create", "", 1).split())
+    return base, ROOM_SEPARATORS.get(base, " ")
+
+
+def _room_number(name: str, base: str, sep: str):
+    """Номер комнаты, если имя — ровно «база + разделитель + число», иначе None."""
+    m = re.fullmatch(re.escape(base + sep) + r"(\d+)", name)
+    return int(m.group(1)) if m else None
+
+
+def _room_kinds(guild):
+    """(id категории, база, разделитель) для каждого входа: где живут его комнаты и как они называются."""
     for entry_id, cat_id in AUTO_CHANNELS.items():
-        if cat_id is None:
-            entry = guild.get_channel(entry_id)
-            cat_id = entry.category_id if entry else None
-        if cat_id: cats.add(cat_id)
-    return cats
+        entry = guild.get_channel(entry_id)
+        if entry is not None:
+            yield (cat_id or entry.category_id, *_room_pattern(entry.name))
+
+
+def _is_room(channel) -> bool:
+    return any(channel.category_id == cat_id and _room_number(channel.name, base, sep) is not None
+               for cat_id, base, sep in _room_kinds(channel.guild))
+
+
+def _http_err(e) -> str:
+    """Коротко об ошибке Discord для лога: статус и код, а вместо HTML-страницы Cloudflare — пометка о бане."""
+    text = e.text if isinstance(e.text, str) else ""
+    if text.lstrip().startswith("<"):
+        return f"{e.status}, HTML-ответ Cloudflare — похоже на бан IP (1015)"
+    return f"{e.status} (код {e.code}){': ' + text[:120] if text else ''}"
 
 
 def answer_embed(user, question: str, reply: str) -> discord.Embed:
@@ -162,6 +189,9 @@ class VoiceAICog(commands.Cog):
     def __init__(self, bot):
         self.bot              = bot
         self._shared_histories = defaultdict(lambda: deque(maxlen=HISTORY_MESSAGES))
+        self._room_locks       = defaultdict(asyncio.Lock)   # категория → номер выбирают по очереди
+        self._room_made_at     = {}                          # участник → когда ему последний раз создали комнату
+        self._room_no_perms    = set()                       # категории, про нехватку прав в которых уже писали
 
     # ── AI Chat ───────────────────────────────────────────────
     # К ИИ в чате обращаются упоминанием: «@BazarčikPM вопрос или просьба» (cogs/jarvis.py, on_message).
@@ -314,32 +344,103 @@ class VoiceAICog(commands.Cog):
         await ctx.send(embed=mode_embed(ctx.guild.id, target, changed=mode is not None),
                        view=ModeView(ctx.author, target))
 
+    # ── Авто-комнаты ──────────────────────────────────────────
+    async def _open_room(self, member, entry):
+        """Зашёл во вход «Create…» — создать ему комнату с первым свободным номером и перекинуть туда."""
+        guild    = member.guild
+        who      = f"{member.display_name} ({member.id})"
+        print(f"[voice] {who} зашёл во вход «{entry.name}»")
+        cat_id   = AUTO_CHANNELS[entry.id] or entry.category_id
+        category = guild.get_channel(cat_id) if cat_id else None
+        if category is None:
+            print(f"[voice] Категория {cat_id} для входа «{entry.name}» ({entry.id}) не найдена — комнату не создаю")
+            return
+        perms = category.permissions_for(guild.me)
+        if not (perms.manage_channels and perms.move_members):
+            if category.id not in self._room_no_perms:   # заведомо получим 403 — не дёргаем API зря
+                self._room_no_perms.add(category.id)
+                missing = [p for p, ok in (("Manage Channels", perms.manage_channels),
+                                           ("Move Members", perms.move_members)) if not ok]
+                print(f"[voice] Нет прав {', '.join(missing)} в категории «{category.name}» — "
+                      f"авто-комнаты там не создаю (сообщаю один раз до перезапуска)")
+            return
+        now = time.monotonic()
+        since = now - self._room_made_at.get(member.id, 0)
+        if since < ROOM_COOLDOWN:
+            print(f"[voice] {who}: прошлая комната {since:.1f} с назад, лимит {ROOM_COOLDOWN} с — "
+                  f"новую не создаю, остаётся во входе")
+            return                                # прыгает во вход и обратно — не плодим каналы
+        self._room_made_at[member.id] = now
+
+        base, sep = _room_pattern(entry.name)
+        # Под замком до самого перекида: следующий вошедший увидит уже созданную комнату и возьмёт другой номер
+        async with self._room_locks[category.id]:
+            waited = time.monotonic() - now
+            if waited > 0.5:
+                print(f"[voice] {who} ждал очереди на комнату {waited:.1f} с")
+            if member.voice is None or member.voice.channel != entry:
+                print(f"[voice] {who} ушёл из входа, пока ждал очереди — комнату не создаю")
+                return
+            taken = {_room_number(ch.name, base, sep) for ch in category.voice_channels} - {None}
+            num = 1
+            while num in taken: num += 1
+            name = f"{base}{sep}{num}"
+            started = time.monotonic()
+            try:
+                # права сразу как у категории — без отдельного запроса на синхронизацию
+                room = await guild.create_voice_channel(name, category=category, overwrites=category.overwrites)
+            except discord.HTTPException as e:
+                print(f"[voice] Не создал комнату «{name}» для {who}: {_http_err(e)}")
+                return
+            created = time.monotonic()
+            try:
+                await member.move_to(room)
+            except discord.HTTPException as e:
+                print(f"[voice] Не перекинул {who} в «{name}»: {_http_err(e)} — удаляю комнату")
+                try: await room.delete()          # иначе пустая комната так и останется висеть
+                except discord.HTTPException as e2: print(f"[voice] Не удалил брошенную «{name}»: {_http_err(e2)}")
+                return
+            print(f"[voice] {who} → «{name}» ({room.id}) в «{category.name}»: создание "
+                  f"{(created - started) * 1000:.0f} мс, перекид {(time.monotonic() - created) * 1000:.0f} мс; "
+                  f"заняты номера {sorted(taken) or 'нет'}")
+
+    async def _close_room_if_empty(self, channel, member):
+        await asyncio.sleep(5)
+        ch = channel.guild.get_channel(channel.id)
+        if ch is None:
+            return                                # уже удалили (другой уход или руками)
+        if ch.members:
+            return
+        try:
+            await ch.delete()
+            print(f"[voice] Удалил опустевшую «{ch.name}» ({ch.id}), последним вышел {member.display_name}")
+        except discord.NotFound: pass
+        except discord.HTTPException as e: print(f"[voice] Не удалил «{ch.name}»: {_http_err(e)}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Пустые комнаты, оставшиеся с прошлого запуска, — удалить: уходов из них уже не будет."""
+        for guild in self.bot.guilds:
+            empty = [ch for ch in guild.voice_channels if not ch.members and _is_room(ch)]
+            deleted = 0
+            for ch in empty:
+                try:
+                    await ch.delete()
+                    deleted += 1
+                except discord.HTTPException as e:
+                    print(f"[voice] Уборка: не удалил «{ch.name}»: {_http_err(e)}")
+            if empty:
+                print(f"[voice] Уборка на «{guild.name}»: удалил {deleted} из {len(empty)} пустых авто-комнат "
+                      f"({', '.join(ch.name for ch in empty)})")
+
     # ── Voice state ───────────────────────────────────────────
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        moved = (before.channel.id if before.channel else None) != (after.channel.id if after.channel else None)
 
-        # === Создание авто-канала ===
-        if after.channel and after.channel.id in AUTO_CHANNELS:
-            guild    = member.guild
-            cat_id   = AUTO_CHANNELS[after.channel.id] or after.channel.category_id
-            category = guild.get_channel(cat_id) if cat_id else None
-            if category is None:
-                print(f"[voice] Категория для авто-канала {after.channel.id} не найдена")
-                return
-            new_name = after.channel.name.replace("Create", "")
-            prefix   = "_ZP" if new_name == "🔊 Poslucháreň" else " "
-
-            existing = set()
-            for ch in category.voice_channels:
-                if ch.name.startswith(new_name + prefix):
-                    try: existing.add(int(ch.name.replace(new_name + prefix, "").strip()))
-                    except ValueError: pass
-
-            num = 1
-            while num in existing: num += 1
-            new_ch = await guild.create_voice_channel(name=f"{new_name}{prefix}{num}", category=category)
-            await new_ch.edit(sync_permissions=True)
-            await member.move_to(new_ch)
+        # === Создание авто-канала === (только при входе: mute/камера внутри входа — не повод)
+        if moved and after.channel and after.channel.id in AUTO_CHANNELS:
+            await self._open_room(member, after.channel)
             return
 
         # === Приветствие Юры ===
@@ -403,17 +504,9 @@ class VoiceAICog(commands.Cog):
                                 try: await m.move_to(None)
                                 except Exception: pass
 
-        # === Удаление пустого канала ===
-        if before.channel:
-            if before.channel.id in AUTO_CHANNELS: return
-            if before.channel.category_id not in _auto_categories(member.guild): return
-            if not re.search(r"\d+$", before.channel.name): return
-
-            await asyncio.sleep(5)
-            ch = member.guild.get_channel(before.channel.id)
-            if ch and len(ch.members) == 0:
-                try: await ch.delete()
-                except Exception as e: print(f"[ERROR] delete channel: {e}")
+        # === Удаление пустой авто-комнаты ===
+        if moved and before.channel and _is_room(before.channel):
+            await self._close_room_if_empty(before.channel, member)
 
 
 def mode_embed(guild_id, target, changed: bool = False) -> discord.Embed:
