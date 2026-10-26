@@ -441,6 +441,9 @@ class VoiceAICog(commands.Cog):
         # === Создание авто-канала === (только при входе: mute/камера внутри входа — не повод)
         if moved and after.channel and after.channel.id in AUTO_CHANNELS:
             await self._open_room(member, after.channel)
+            # пришёл во вход прямо из своей комнаты — она могла опустеть, а ниже до удаления дело не дойдёт
+            if before.channel and _is_room(before.channel):
+                await self._close_room_if_empty(before.channel, member)
             return
 
         # === Приветствие Юры ===
