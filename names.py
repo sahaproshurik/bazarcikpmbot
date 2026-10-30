@@ -242,6 +242,23 @@ def names_of(member) -> list:
     return [n for n in dict.fromkeys(own + (aliases_of(guild_id, member.id) if guild_id else [])) if n]
 
 
+def spoken_name(member) -> str:
+    """Как назвать человека голосом: первое прозвище («алкаш»), иначе ник без значков («чвк. allCa$h» не прочесть)."""
+    aliases = aliases_of(getattr(getattr(member, "guild", None), "id", None), member.id)
+    if aliases:
+        return aliases[0]
+    name = " ".join(re.sub(r"[^\w\s'’-]", " ", member.display_name).split())
+    return name or member.display_name
+
+
+def hard_to_say(member) -> bool:
+    """Ник, который голосом не назвать и Whisper не запишет: значки, смесь алфавитов, нет ни одной буквы."""
+    name = member.display_name
+    letters = [c for c in name if c.isalpha()]
+    scripts = {unicodedata.name(c, "").split()[0] for c in letters}
+    return not letters or len(scripts) > 1 or bool(re.search(r"[^\w\s'’.-]", name))
+
+
 # ── Кто имелся в виду ─────────────────────────────────────────
 def name_score(query: str, member, loose: str = None) -> float:
     """Насколько нормализованное имя query похоже на участника (ник, имя, прозвища): 0…1.

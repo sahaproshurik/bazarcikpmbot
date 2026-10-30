@@ -5,6 +5,8 @@ voice_listen.py — бот слушает войс и отвечает голо�
 Каждый участник записывается отдельно. Когда человек замолчал, начало фразы слушает локальный детектор
 «Базарчик» (wake_word.py, Vosk на сервере бота), и только фразы с обращением уходят в Whisper (Groq).
 Если фраза начинается с «Базарчик» — ИИ отвечает голосом и дублирует ответ в чат.
+Обращения всех встают в очередь (Request, ListenSession._work): разговор с одним человеком ведётся до конца,
+остальные ждут своей очереди, а не теряются.
 Звук живёт только в памяти до распознавания и сразу удаляется; фразы без обращения никуда не пишутся.
 
 Запасной путь — голосовое сообщение в чате, которое начинается с «Базарчик, …»: бот ответит так же.
@@ -14,6 +16,7 @@ Discord шифрует голос (DAVE), и py-cord пока помечает �
 """
 import asyncio
 import io
+import logging
 import re
 import threading
 import time
@@ -21,6 +24,7 @@ import warnings
 import wave
 from array import array
 from collections import defaultdict, deque
+from dataclasses import dataclass
 import discord
 from discord.ext import commands
 from discord.opus import Decoder as OpusDecoder
@@ -30,7 +34,7 @@ import diag
 import wake_word
 from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
-from names import aliases_of, all_aliases, norm_name
+from names import all_aliases, norm_name, spoken_name
 
 try:
     import davey
@@ -108,13 +112,27 @@ if (PacketDecryptor is not None and discord.__version__.startswith("2.8")
     PacketDecryptor._bazarcik_original = PacketDecryptor.decrypt_rtp
     PacketDecryptor.decrypt_rtp = _decrypt_rtp_fixed
 
+# Битые пакеты Opus («corrupted stream») py-cord пишет в лог по строке на каждый — несколько раз в секунду.
+# Их меньше 1%, и наш синк сам считает их в «ошибок N» минутного отчёта; потерянные пакеты (WARNING) остаются в логе.
+logging.getLogger("discord.opus").setLevel(logging.WARNING)
+
 SAMPLE_RATE     = 48000      # py-cord отдаёт PCM 48 кГц, 16 бит, стерео
 BYTES_PER_SEC   = SAMPLE_RATE * 4
 SILENCE_SEC     = 0.9        # пауза, после которой фраза считается законченной
-MIN_SPEECH_SEC  = 0.6        # короче — покашливание или щелчок
+MIN_SPEECH_SEC  = 0.6        # короче — покашливание или щелчок (предзапись не в счёт)
 MAX_SPEECH_SEC  = 20         # длиннее не копим: на любой вопрос хватает
 VOICE_THRESHOLD = 450        # громкость (RMS), ниже которой кадр считается тишиной
+PREROLL_SEC     = 0.3        # столько звука до первого громкого кадра добавляем к фразе: тихое «б» в «Базарчик»
+TAIL_SEC        = 0.25       # тишины после последнего громкого кадра оставляем — остальную паузу в Whisper не шлём
+FRAME_BYTES     = 3840       # 20 мс PCM 48 кГц стерео — один пакет Opus
+STT_RATE        = 16000      # Whisper всё равно переводит звук в 16 кГц — шлём сразу так, файл втрое меньше
+TARGET_PEAK     = 24000      # тихий микрофон поднимаем до этого пика…
+MAX_GAIN        = 6.0        # …но не больше чем в 6 раз, чтобы не раздуть шум
 FOLLOWUP_SEC    = 10         # после «Базарчик?» без вопроса ждём продолжение
+QUEUE_MAX       = 6          # обращений в очереди, пока бот разговаривает с другим
+QUEUE_PER_USER  = 2          # от одного человека — не больше
+QUEUE_WAIT_SEC  = 120        # обращение ждало дольше — устарело, просим повторить
+TALK_MAX_SEC    = 90         # один разговор (ответ, «Слушаю», подтверждение) дольше не держит очередь
 ALONE_STOP_SEC  = 60         # в войсе никого — выключаемся
 IDLE_STOP_SEC   = 30 * 60    # полчаса никто не обращался — выключаемся
 STT_LIMIT       = (40, 300)  # не больше 40 распознаваний за 5 минут — бережём лимиты Groq
@@ -149,6 +167,21 @@ DEFAULT_LANG    = "ru"
 WAKE_RE = re.compile(
     r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р[\s,-]{0,2}ч\w*|baz[aá]r[\s,-]{0,2}[cč]h?\w*)[\s,.!?:;…—-]*",
     re.IGNORECASE)
+
+
+# Фразы, которые Whisper выдумывает на шуме и тишине: он учился на роликах с субтитрами.
+JUNK_RE = re.compile(
+    r"продолжение следует|субтитры (?:сделал|создавал|подогнал|делал)[^.!?]*|редактор субтитров[^.!?]*"
+    r"|корректор а\.\s?\w+|спасибо за просмотр|подписывайтесь на (?:наш )?канал|дякую за перегляд"
+    r"|субтитри (?:зроб|створ|підготув)\w*[^.!?]*|titulky (?:vytvoril|pripravil|vyrobil)[^.!?]*"
+    r"|thanks? (?:you )?for watching|subtitles by[^.!?]*|amara\.org[^.!?]*|dimatorzok",
+    re.IGNORECASE)
+
+
+def drop_junk(text: str) -> str:
+    """Текст без выдуманных Whisper фраз; осталась одна пунктуация — пустая строка."""
+    text = JUNK_RE.sub(" ", text or "")
+    return " ".join(text.split()) if re.search(r"\w", text) else ""
 
 
 def split_wake(text: str):
@@ -195,15 +228,6 @@ def is_stop(question: str) -> bool:
     return 0 < len(words) <= 3 and words[0] in STOP_WORDS
 
 
-def spoken_name(member) -> str:
-    """Как назвать человека голосом: первое прозвище («алкаш»), иначе ник без значков («чвк. allCa$h» не прочесть)."""
-    aliases = aliases_of(getattr(getattr(member, "guild", None), "id", None), member.id)
-    if aliases:
-        return aliases[0]
-    name = " ".join(re.sub(r"[^\w\s'’-]", " ", member.display_name).split())
-    return name or member.display_name
-
-
 def whisper_hint(guild, members=()) -> str:
     """Подсказка Whisper: как пишутся обращение и имена — люди в войсе, потом прозвища сервера.
     Без неё Whisper записывает имя созвучным словом («Батки»), и Джарвис не находит, о ком речь."""
@@ -241,9 +265,12 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
         info["requests"] += 1
         heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
     info.update(lang=lang, score=heard.score)
-    question = split_wake(heard.text)
-    if question is None and waiting and heard.text:
-        question = heard.text
+    text = drop_junk(heard.text)
+    if text != " ".join((heard.text or "").split()):
+        info["junk"] = True               # в лог — только факт, без текста
+    question = split_wake(text)
+    if question is None and waiting and text:
+        question = text
     return question
 
 
@@ -251,7 +278,8 @@ def whisper_note(info: dict, seconds: float) -> str:
     """«Whisper uk (-0.33), 2 запроса, 0.9 с» — для логов."""
     score = info.get("score")
     lang = f"{info.get('lang')} ({score:.2f})" if score is not None else str(info.get("lang"))
-    return f"Whisper {lang}, запросов {info.get('requests', 0)}, {seconds:.1f} с"
+    junk = ", убрал выдуманное на шуме" if info.get("junk") else ""
+    return f"Whisper {lang}, запросов {info.get('requests', 0)}, {seconds:.1f} с{junk}"
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -261,16 +289,34 @@ def frame_loud(pcm: bytes) -> bool:
     return bool(probe) and (sum(s * s for s in probe) / len(probe)) ** 0.5 >= VOICE_THRESHOLD
 
 
+def trim_tail(pcm: bytes) -> bytes:
+    """Срезает паузу в конце фразы, оставляя TAIL_SEC: на тишине Whisper выдумывает «Продолжение следует…»."""
+    end = len(pcm) - len(pcm) % FRAME_BYTES
+    while end > 0 and not frame_loud(pcm[end - FRAME_BYTES:end]):
+        end -= FRAME_BYTES
+    return pcm[: end + int(TAIL_SEC * BYTES_PER_SEC) // FRAME_BYTES * FRAME_BYTES] if end else pcm
+
+
+def louder(samples: array) -> array:
+    """Тихий микрофон — громче, до TARGET_PEAK и не больше чем в MAX_GAIN раз. Громкий не трогаем."""
+    peak = max(max(samples, default=0), -min(samples, default=0))
+    gain = min(TARGET_PEAK / peak, MAX_GAIN) if peak else 1.0
+    if gain < 1.2:
+        return samples
+    return array("h", (int(s * gain) for s in samples))
+
+
 def to_wav(pcm: bytes) -> bytes:
-    """Стерео 48 кГц → моно WAV в памяти: вдвое меньше трафика на распознавание, без файлов на диске."""
+    """Фраза для Whisper: без паузы в конце, 16 кГц моно, тихий голос поднят. WAV в памяти, без файлов на диске.
+    Ресэмплинг — тот же, что у детектора (wake_word.to_16k_mono). Медленно для event loop — зовём через to_thread."""
     samples = array("h")
-    samples.frombytes(pcm[: len(pcm) - len(pcm) % 4])
+    samples.frombytes(wake_word.to_16k_mono(trim_tail(pcm)))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes(samples[0::2].tobytes())
+        w.setframerate(STT_RATE)
+        w.writeframes(louder(samples).tobytes())
     return buf.getvalue()
 
 
@@ -285,6 +331,8 @@ class UtteranceSink(Sink):
         self.last_voice: dict = {}
         self.users: dict = {}
         self.decoders: dict = {}          # uid → свой Opus-декодер на каждого говорящего
+        self.preroll: dict = {}           # uid → последние тихие кадры до начала фразы (время, PCM)
+        self.lead: dict = {}              # uid → сколько байт предзаписи в начале его фразы
         self.frames = 0                   # кадров со звуком — если 0, приём голоса не работает
         self.stats = {"packets": 0, "empty": 0, "bad": 0}
         self.last_error = None
@@ -326,15 +374,23 @@ class UtteranceSink(Sink):
             self.stats["empty"] += 1
             return
         self.frames += 1
-        loud = frame_loud(pcm)
+        loud, now = frame_loud(pcm), time.monotonic()
         with self._lock:
-            if user.id not in self.buffers and not loud:
-                return                    # тишина до начала речи
-            buf = self.buffers.setdefault(user.id, bytearray())
+            buf = self.buffers.get(user.id)
+            if buf is None:
+                recent = self.preroll.setdefault(user.id, deque(maxlen=round(PREROLL_SEC * 50)))
+                if not loud:
+                    recent.append((now, pcm))   # тишина до начала речи — помним только последние 0.3 с
+                    return
+                # начало речи: кадры, пришедшие перед ним (не старые, от прошлой фразы), идут в начало фразы
+                lead = b"".join(p for t, p in recent if now - t <= PREROLL_SEC + 0.05)
+                recent.clear()
+                buf = self.buffers[user.id] = bytearray(lead)
+                self.lead[user.id] = len(lead)
             if len(buf) < MAX_SPEECH_SEC * BYTES_PER_SEC:
                 buf.extend(pcm)
             if loud:
-                self.last_voice[user.id] = time.monotonic()
+                self.last_voice[user.id] = now
             self.users[user.id] = user
 
     def pop_finished(self) -> list:
@@ -346,7 +402,7 @@ class UtteranceSink(Sink):
                     pcm = bytes(self.buffers.pop(uid, b""))
                     del self.last_voice[uid]
                     user = self.users.pop(uid)
-                    if len(pcm) >= MIN_SPEECH_SEC * BYTES_PER_SEC:
+                    if len(pcm) - self.lead.pop(uid, 0) >= MIN_SPEECH_SEC * BYTES_PER_SEC:
                         done.append((user, pcm))
         return done
 
@@ -356,12 +412,29 @@ class UtteranceSink(Sink):
             self.buffers.clear()
             self.last_voice.clear()
             self.users.clear()
+            self.preroll.clear()
+            self.lead.clear()
         self.decoders.clear()
 
     def report(self) -> str:
         s = self.stats
         text = f"пакетов {s['packets']}, со звуком {self.frames}, пустых {s['empty']}, ошибок {s['bad']}"
         return text + (f" (последняя: {self.last_error})" if self.last_error else "")
+
+
+@dataclass
+class Request:
+    """Обращение к боту в очереди. Текст вопроса живёт в памяти только до ответа, в логи не попадает."""
+    tag: str                      # «#12 Petya» — номер фразы в логах
+    user: object
+    question: str                 # "" — позвали без вопроса («Базарчик?»)
+    lang: str
+    heard: float                  # когда фраза закончилась (time.monotonic)
+    taken: float = 0.0            # когда обработчик взял её из очереди
+
+    @property
+    def kind(self) -> str:
+        return f"вопрос, слов {len(self.question.split())}" if self.question else "позвали без вопроса"
 
 
 class ListenSession:
@@ -374,8 +447,11 @@ class ListenSession:
         self.alone_since = None
         self.followup: dict = {}          # uid → до какого момента ждём вопрос после «Базарчик?»
         self.min_phrase: dict = {}        # uid → в окне строгого подтверждения фразы короче не распознаём
-        self.partner = None               # с кем бот сейчас разговаривает: остальных до конца разговора не слушаем
+        self.partner = None               # с кем бот сейчас разговаривает (обращение, которое взято из очереди)
         self.serving = 0                  # сколько фраз собеседника сейчас в работе (Whisper, ответ, вопрос «да?»)
+        self.queue: deque = deque()       # обращения остальных — ждут, пока бот договорит с собеседником
+        self.current = None               # обращение, с которым бот работает сейчас
+        self.queued = asyncio.Event()     # будит обработчик очереди
         self.stt_times: deque = deque()
         self.tasks: set = set()
         self.warned_quiet = self.warned_limit = self.stopping = False
@@ -399,18 +475,103 @@ class ListenSession:
                 f"без «Базарчик» (ждали ответ) {c.get('bypass', 0)}, запросов в Whisper {c.get('whisper', 0)}, "
                 f"вопросов боту {c.get('questions', 0)}, отсеял Whisper {c.get('dropped', 0)}, "
                 f"мимо лимита {c.get('limit', 0)}, коротких в окне подтверждения {c.get('short', 0)}, "
-                f"пока занят другим {c.get('busy', 0)}, «стоп» {c.get('stopped', 0)}")
+                f"в очередь {c.get('queued', 0)}, устарело в очереди {c.get('stale', 0)}, "
+                f"не влезло в очередь {c.get('full', 0)}, пропущено, пока бот говорит {c.get('busy', 0)}, "
+                f"«стоп» {c.get('stopped', 0)}")
 
-    def busy_with(self, user):
-        """С кем бот разговаривает, если не с этим человеком; None — свободен или разговор с ним самим.
-        Разговор идёт, пока фраза собеседника в работе или бот ждёт от него вопрос либо подтверждение."""
-        partner = self.partner
-        if partner is None or partner.id == user.id:
-            return None
-        if self.serving or self.vc.is_playing() or time.monotonic() <= self.followup.get(partner.id, 0):
-            return partner                # в том числе пока бот договаривает ему ответ
-        self.partner = None               # разговор закончен — бот снова слушает всех
-        return None
+    def queue_note(self) -> str:
+        """«сейчас: #12 Petya (вопрос, 8 с); в очереди: #14 Kolya (позвали, ждёт 3 с)» — для логов, без текста."""
+        now, cur = time.monotonic(), self.current
+        doing = f"сейчас: {cur.tag} ({cur.kind}, {now - cur.taken:.0f} с)" if cur is not None else "сейчас: свободен"
+        waiting = ", ".join(f"{r.tag} ({r.kind}, ждёт {now - r.heard:.0f} с)" for r in self.queue) or "пусто"
+        return f"{doing}; в очереди: {waiting}"
+
+    def in_talk(self, user) -> bool:
+        return self.partner is not None and self.partner.id == user.id
+
+    def queued_call(self, user):
+        """Обращение человека в очереди, где он позвал без вопроса («Базарчик?») — к нему дописывается вопрос."""
+        return next((r for r in self.queue if r.user.id == user.id and not r.question), None)
+
+    async def enqueue(self, req):
+        """Обращение — в очередь. Бот свободен — обработчик возьмёт его сразу; занят — человек узнает своё место."""
+        mine = [r for r in self.queue if r.user.id == req.user.id]
+        if not req.question and mine:
+            print(f"[queue] {req.tag}: позвал ещё раз — он уже в очереди ({mine[0].tag}), не дублирую")
+            return
+        if len(mine) >= QUEUE_PER_USER or len(self.queue) >= QUEUE_MAX:
+            self.count("full")
+            why = (f"у него уже {len(mine)} в очереди" if len(mine) >= QUEUE_PER_USER
+                   else f"очередь полна ({QUEUE_MAX})")
+            print(f"[queue] ✗ {req.tag}: {req.kind} не принят — {why}; {self.queue_note()}")
+            await self.notify(f"⏳ {req.user.display_name}, сейчас много обращений — повтори чуть позже.")
+            return
+        ahead = len(self.queue) + (self.current is not None)
+        self.queue.append(req)
+        self.queued.set()
+        self.count("queued")
+        print(f"[queue] + {req.tag}: {req.kind}, " + (f"перед ним {ahead}" if ahead else "бот свободен — сразу")
+              + f"; {self.queue_note()}")
+        if ahead:
+            if not req.question:          # «Базарчик?» в очереди — вопрос можно сказать сразу, без обращения
+                self.followup[req.user.id] = time.monotonic() + FOLLOWUP_SEC
+            await self.notify(f"📝 {req.user.display_name}, услышал — отвечу по очереди (перед тобой {ahead})."
+                              + ("" if req.question else " Вопрос можешь сказать сразу."))
+
+    async def notify(self, text: str):
+        try:
+            await self.channel.send(text, delete_after=30)
+        except discord.HTTPException as e:
+            print(f"[queue] Не удалось написать в чат: {e!r}")
+
+    async def _work(self):
+        """Обработчик очереди: берёт обращения по одному и ведёт разговор до конца — ответ, вопрос после
+        «Слушаю», подтверждение кика. Пока разговор идёт, новые обращения копятся в очереди, а не теряются."""
+        while not self.stopping:
+            if not self.queue:
+                self.queued.clear()
+                await self.queued.wait()
+                continue
+            req = self.queue.popleft()
+            waited = time.monotonic() - req.heard
+            if waited > QUEUE_WAIT_SEC:
+                self.count("stale")
+                print(f"[queue] ✗ {req.tag}: ждал {waited:.0f} с — дольше {QUEUE_WAIT_SEC} с, пропускаю; "
+                      f"{self.queue_note()}")
+                await self.notify(f"⌛ {req.user.display_name}, твоё обращение ждало слишком долго — повтори, пожалуйста.")
+                continue
+            req.taken = time.monotonic()
+            self.current, self.partner = req, req.user
+            self.followup.pop(req.user.id, None)        # окно «скажи вопрос сразу» в очереди больше не нужно
+            print(f"[queue] → {req.tag}: беру {req.kind} (ждал {waited:.1f} с); {self.queue_note()}")
+            try:
+                if req.question:
+                    await self.ask_bot(req.user, req.question, req.tag, req.heard, req.lang)
+                else:
+                    await self.listening(req.user, req.tag, req.lang)
+                await self.talk_over(req.user, req.tag)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[queue] {req.tag}: ошибка в разговоре: {e!r}")
+            finally:
+                self.current = self.partner = None
+                print(f"[queue] ✓ {req.tag}: разговор закончен за {time.monotonic() - req.taken:.1f} с; "
+                      f"{self.queue_note()}")
+
+    async def talk_over(self, user, tag: str):
+        """Ждём конца разговора: бот договорил, фраза собеседника не в работе, окно вопроса или подтверждения
+        закрыто, и он не договаривает фразу, начатую в окне."""
+        limit = time.monotonic() + TALK_MAX_SEC
+        while not self.stopping:
+            now, window = time.monotonic(), self.followup.get(user.id, 0)
+            speaking = user.id in self.sink.last_voice and now <= window + MAX_SPEECH_SEC
+            if not (self.vc.is_playing() or self.serving or now <= window or speaking):
+                return
+            if now > limit:
+                print(f"[queue] {tag}: разговор идёт дольше {TALK_MAX_SEC} с — перехожу к следующему")
+                return
+            await asyncio.sleep(0.25)
 
     def start(self):
         self.sink.init(self.vc)
@@ -418,6 +579,7 @@ class ListenSession:
             warnings.simplefilter("ignore", RuntimeWarning)
             self.vc.start_recording(self.sink, self._on_reader_stop)
         self.loop_task = asyncio.create_task(self._watch())
+        self._spawn(self._work())
         wake_word.detector.acquire()      # модель «Базарчик» грузится в фоне, пока она не готова — всё решает Whisper
         humans = sum(not m.bot for m in getattr(self.vc.channel, "members", []))
         print(f"[listen] Старт: {getattr(self.guild, 'name', self.guild.id)} / "
@@ -513,6 +675,7 @@ class ListenSession:
                     self.reported_at = now
                     print(f"[listen] {self.vc.channel}: {self.sink.report()}{wake_word.detector.report()}")
                     print(f"[listen] За минуту: {self.counts_note(self.minute)}; {diag.report(self.cpu)}")
+                    print(f"[queue] {self.queue_note()}")
                     self.minute = {}
                 if not self.warned_quiet and humans and self.sink.frames == 0 and now - self.started > QUIET_HINT_SEC:
                     self.warned_quiet = True
@@ -542,20 +705,16 @@ class ListenSession:
         return True
 
     async def handle(self, user, pcm: bytes):
-        """Одна фраза: детектор → лимит → Whisper → ответ. В логах — путь фразы под номером, без её текста."""
+        """Одна фраза: детектор → лимит → Whisper → очередь (или сразу собеседнику, если бот ждёт его ответ).
+        В логах — путь фразы под номером, без её текста."""
         self.phrase_no += 1
         tag = f"#{self.phrase_no} {user.display_name}"
         started = time.monotonic()
         self.count("phrases")
-        if (other := self.busy_with(user)) is not None:
-            self.count("busy")
-            print(f"[listen] {tag}: бот разговаривает с {other.display_name} — фраза пропущена")
-            return                        # до конца разговора остальных не слушаем — даже детектором
         seconds = len(pcm) / BYTES_PER_SEC
         # фраза считается в окне, если в окне началась — длинный вопрос не должен «опоздать» из-за своей длины
         waiting = started - SILENCE_SEC - seconds <= self.followup.get(user.id, 0)
-        partner = self.partner
-        if not waiting and partner is not None and partner.id == user.id and self.vc.is_playing():
+        if not waiting and self.in_talk(user) and self.vc.is_playing():
             return await self._while_speaking(user, pcm, tag)
         if waiting:
             need = self.min_phrase.get(user.id, 0)
@@ -565,22 +724,41 @@ class ListenSession:
                       "короткое не распознаю")
                 return
             self.count("bypass")
-            print(f"[listen] {tag}: фраза {seconds:.1f} с — бот ждёт ответ, идёт без детектора "
+            print(f"[listen] {tag}: фраза {seconds:.1f} с — бот ждёт от него вопрос или ответ, идёт без детектора "
                   f"(окно ещё {self.followup[user.id] - started:.0f} с)")
-        elif not await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с)"):
+        elif not await wake_word.detector.heard(pcm, f"{tag} ({seconds:.1f} с)"):
             return                        # «Базарчик» не прозвучал — фраза не уходит даже в Whisper
-        elif (other := self.busy_with(user)) is not None:
-            self.count("busy")            # пока детектор слушал, бота уже позвал другой
-            print(f"[listen] {tag}: бот разговаривает с {other.display_name} — фраза пропущена")
-            return
         else:
             self.count("to_bot")
-        self.partner = user               # теперь бот разговаривает с ним
-        self.serving += 1
+        talk = waiting and (self.in_talk(user) or self.queued_call(user) is None)
+        if talk:
+            self.serving += 1             # ответ собеседника: разговор не кончится, пока фраза в работе
         try:
-            await self._converse(user, pcm, tag, started, waiting)
+            heard = await self.hear(user, pcm, tag, started, waiting)
+            del pcm
+            if heard is None:
+                return
+            question, lang, note = heard
+            if talk:                      # бот ждёт именно его: вопрос после «Слушаю», «да», полная фраза
+                return await self.answer(user, question, tag, started, lang, note)
+            if waiting and (call := self.queued_call(user)) is not None and question:
+                call.question = question  # «Базарчик?» ждёт в очереди — вопрос дописывается к нему
+                self.followup.pop(user.id, None)
+                print(f"[queue] ✎ {tag}: {note} — вопрос дописан к {call.tag} (слов: {len(question.split())}); "
+                      f"{self.queue_note()}")
+                return
+            if is_stop(question) and (mine := [r for r in self.queue if r.user.id == user.id]):
+                for r in mine:
+                    self.queue.remove(r)
+                self.followup.pop(user.id, None)
+                print(f"[queue] ✗ {tag}: «стоп» — убрал его обращения из очереди ({len(mine)}); {self.queue_note()}")
+                return
+            print(f"[listen] {tag}: {note} — " + (f"вопрос боту (слов: {len(question.split())})" if question
+                                                   else "позвали без вопроса"))
+            await self.enqueue(Request(tag, user, question, lang, started))
         finally:
-            self.serving -= 1
+            if talk:
+                self.serving -= 1
 
     def confirming(self, user) -> bool:
         """Джарвис спрашивает у человека подтверждение (кик, бан, перевод) — такой вопрос договаривается целиком."""
@@ -590,8 +768,8 @@ class ListenSession:
         return p is not None and not p.done
 
     async def _while_speaking(self, user, pcm: bytes, tag: str):
-        """Бот отвечает собеседнику голосом: от него слышим только «Базарчик, стоп», остальное пропускаем.
-        Вопрос-подтверждение не прерывается — его бот договаривает до конца."""
+        """Бот отвечает собеседнику голосом: «Базарчик, стоп» обрывает ответ, другое обращение к боту встаёт
+        в очередь. Вопрос-подтверждение не прерывается — его бот договаривает до конца."""
         if self.confirming(user):
             self.count("busy")
             print(f"[listen] {tag}: бот договаривает вопрос-подтверждение — фраза пропущена")
@@ -601,7 +779,7 @@ class ListenSession:
         if not self._stt_allowed():
             self.count("limit")
             return
-        audio, lang, info = to_wav(pcm), listen_lang(self.guild.id), {}
+        audio, lang, info = await asyncio.to_thread(to_wav, pcm), listen_lang(self.guild.id), {}
         del pcm
         try:
             question = await recognize(audio, "speech.wav", lang, False, info)
@@ -613,24 +791,28 @@ class ListenSession:
             self.count("whisper", info.get("requests", 0))
         if is_stop(question):
             return await self.stop_speaking(user, tag, lang)
-        self.count("busy")
-        print(f"[listen] {tag}: пока бот отвечает, слушаю только «Базарчик, стоп» — фраза пропущена")
+        if question is None:
+            self.count("dropped")
+            print(f"[listen] {tag}: бот говорит, Whisper обращения не нашёл — фраза выброшена")
+            return
+        print(f"[listen] {tag}: бот ещё отвечает ему — новое обращение в очередь")
+        await self.enqueue(Request(tag, user, question, lang, time.monotonic()))
 
     async def stop_speaking(self, user, tag: str, lang: str):
-        """«Базарчик, стоп»: озвучка обрывается (и то, что ждало очереди), бот говорит «Хорошо» и снова слушает всех."""
+        """«Базарчик, стоп»: озвучка обрывается (и то, что ждало воспроизведения), бот говорит «Хорошо»
+        и берёт следующее обращение из очереди."""
         hush(self.vc)
-        self.partner = None
         self.followup.pop(user.id, None)
         self.min_phrase.pop(user.id, None)
         self.count("stopped")
-        print(f"[listen] {tag}: «Базарчик, стоп» — озвучка прервана, бот снова слушает всех")
+        print(f"[listen] {tag}: «Базарчик, стоп» — озвучка прервана; {self.queue_note()}")
         try:
             await say(self.vc, OK_SAID.get(lang, OK_SAID["ru"]))
         except Exception as e:
             print(f"[listen] Не удалось ответить голосом: {e!r}")
 
-    async def _converse(self, user, pcm: bytes, tag: str, started: float, waiting: bool):
-        """Фраза собеседника: лимит → Whisper → «Слушаю, имя» или ответ."""
+    async def hear(self, user, pcm: bytes, tag: str, started: float, waiting: bool):
+        """Лимит → Whisper. (вопрос, язык, строка для лога) или None — фраза не к боту, лимит или ошибка."""
         if not self._stt_allowed():
             self.count("limit")
             print(f"[listen] {tag}: пропущена — лимит {STT_LIMIT[0]} распознаваний за {STT_LIMIT[1] // 60} мин")
@@ -638,8 +820,8 @@ class ListenSession:
                 self.warned_limit = True
                 await self.channel.send("⏳ Слишком много разговоров — часть фраз пропускаю, чтобы не упереться "
                                         "в лимиты распознавания.", delete_after=30)
-            return
-        audio = to_wav(pcm)
+            return None
+        audio = await asyncio.to_thread(to_wav, pcm)
         del pcm
         info, lang = {}, listen_lang(self.guild.id)
         try:
@@ -647,7 +829,7 @@ class ListenSession:
                                        whisper_hint(self.guild, getattr(self.vc.channel, "members", [])))
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
-            return
+            return None
         finally:
             del audio                     # звук больше нигде не хранится
             self.count("whisper", info.get("requests", 0))
@@ -657,31 +839,42 @@ class ListenSession:
             heard = (f" (начало: «{info.get('head', '')}»)" if getattr(wake_word.detector, "model", None) is not None
                      and not waiting else "")   # детектор услышал «Базарчик», а Whisper — нет: что он записал
             print(f"[listen] {tag}: {note} — обращения нет, фраза выброшена{heard}")
-            return                        # обычный разговор — не к боту, расшифровку выбрасываем
-        if not question:
-            print(f"[listen] {tag}: {note} — позвали без вопроса, жду вопрос {FOLLOWUP_SEC} с; "
-                  "остальных пока не слушаю")
-            self.followup[user.id] = time.monotonic() + FOLLOWUP_SEC
-            try:
-                await say(self.vc, LISTENING.get(lang, LISTENING["ru"]).format(name=spoken_name(user)))
-            except Exception as e:
-                print(f"[listen] Не удалось ответить голосом: {e!r}")
-            for _ in range(40):                   # say() возвращается, когда звук только пошёл, — ждём конца
-                if not self.vc.is_playing():
-                    break
-                await asyncio.sleep(0.25)
-            if self.followup.get(user.id, 0):     # окно — от конца «Слушаю», а не от его начала
-                self.followup[user.id] = max(self.followup[user.id], time.monotonic() + FOLLOWUP_SEC)
-            return
+            return None                   # обычный разговор — не к боту, расшифровку выбрасываем
         score = info.get("score")
-        if (waiting and score is not None and score < MUMBLE_SCORE and len(question.split()) <= 2
+        if (waiting and question and score is not None and score < MUMBLE_SCORE and len(question.split()) <= 2
                 and not self.confirming(user)):   # «э-э», шум — не вопрос; «да» на подтверждение не трогаем
             self.count("dropped")
             print(f"[listen] {tag}: {note} — неразборчиво (слов: {len(question.split())}), за вопрос не считаю, "
                   "жду дальше")
-            return
+            return None
+        return question, lang, note
+
+    async def answer(self, user, question: str, tag: str, started: float, lang: str, note: str):
+        """Фраза того, от кого бот ждёт ответ, — сразу, без очереди: это продолжение его разговора."""
+        if not question:
+            print(f"[listen] {tag}: {note} — снова «Базарчик» без вопроса")
+            return await self.listening(user, tag, lang)
+        print(f"[listen] {tag}: {note} — ответ в разговоре (слов: {len(question.split())})")
+        await self.ask_bot(user, question, tag, started, lang)
+
+    async def listening(self, user, tag: str, lang: str):
+        """«Базарчик» без вопроса: «Слушаю, имя» — и окно, в котором вопрос можно сказать без обращения."""
+        print(f"[listen] {tag}: позвали без вопроса — «Слушаю», жду вопрос {FOLLOWUP_SEC} с; остальные — в очередь")
+        self.followup[user.id] = time.monotonic() + FOLLOWUP_SEC
+        try:
+            await say(self.vc, LISTENING.get(lang, LISTENING["ru"]).format(name=spoken_name(user)))
+        except Exception as e:
+            print(f"[listen] Не удалось ответить голосом: {e!r}")
+        for _ in range(40):                   # say() возвращается, когда звук только пошёл, — ждём конца
+            if not self.vc.is_playing():
+                break
+            await asyncio.sleep(0.25)
+        if self.followup.get(user.id, 0):     # окно — от конца «Слушаю», а не от его начала
+            self.followup[user.id] = max(self.followup[user.id], time.monotonic() + FOLLOWUP_SEC)
+
+    async def ask_bot(self, user, question: str, tag: str, started: float, lang: str):
+        """Вопрос или просьба — Джарвису или ИИ; ответ в чат и голосом."""
         self.count("questions")
-        print(f"[listen] {tag}: {note} — вопрос боту (слов: {len(question.split())})")
         self.followup.pop(user.id, None)
         self.last_wake = time.monotonic()
         await self.cog.reply(self.channel, user, question, self.vc, "🎙️ из войса", lang=lang)
@@ -695,6 +888,9 @@ class ListenSession:
         print(f"[listen] Стоп ({reason or 'без причины'}): {(time.monotonic() - self.started) / 60:.1f} мин, "
               f"{self.counts_note(self.total)}; {self.sink.report()}")
         wake_word.detector.release()
+        if self.queue:
+            print(f"[queue] Прослушивание выключено — в очереди осталось {len(self.queue)}: {self.queue_note()}")
+            self.queue.clear()
         try:
             if self.vc.is_recording():
                 with warnings.catch_warnings():

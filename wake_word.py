@@ -36,8 +36,9 @@ ENABLED      = os.getenv("LOCAL_WAKE", "1").strip().lower() not in ("0", "off", 
 MODEL_URL    = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 MODEL_SHA256 = "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4"
 MODEL_DIR    = os.path.abspath("vosk-wake-ru")
-WINDOW_SEC   = 2.0           # слушаем только начало фразы: обращение стоит первым, «Слушай, Базарчик» влезает
-WAKE_BY_SEC  = 1.2           # «базар» должен начаться не позже — дальше уже не обращение, а середина фразы
+# Фраза начинается с 0.3 с предзаписи (voice_listen.PREROLL_SEC) — на них сдвинуты оба порога.
+WINDOW_SEC   = 2.3           # слушаем только начало фразы: обращение стоит первым, «Слушай, Базарчик» влезает
+WAKE_BY_SEC  = 1.5           # «базар» должен начаться не позже — дальше уже не обращение, а середина фразы
 # Слова-соперники: похожи на «базар» + «чик», но обращением не являются («базилик», «бабах, и чик»,
 # «базар чиста», «базаре»). Когда в словаре только «базар», «чик» и [unk], модели не из чего выбрать, и такие
 # фразы она слышит как обращение. С соперниками ложных срабатываний на замерах нет (37/37 против 33/37),
@@ -190,7 +191,7 @@ class WakeWord:
         self.vosk = None
         self.users = 0
         self.state = "выключен" if not ENABLED else "не загружен"
-        self.stats = {"checked": 0, "heard": 0}
+        self.stats = {"checked": 0, "heard": 0, "work": 0.0}
         self._task = None
         self._lock = threading.Lock()            # распознаём по одной фразе — CPU на хостинге мало
 
@@ -242,13 +243,18 @@ class WakeWord:
         print(f"[wake] Модель загружена за {time.monotonic() - started:.1f} с, режим {MODE}; {diag.report()}")
         return vosk, model
 
-    def _spot(self, model, audio: bytes) -> list:
+    def _spot(self, model, audio: bytes) -> tuple:
+        """(слова, сколько ждали своей очереди, сколько распознавали) — время в секундах.
+        Распознаватель создаётся заново: это ~1 мс против ~45 мс на саму фразу (замер), а чужие фразы его не «настраивают»."""
+        queued = time.monotonic()
         with self._lock:
+            started = time.monotonic()
             rec = self.vosk.KaldiRecognizer(model, 16000, grammar())
             rec.SetWords(True)
             rec.AcceptWaveform(audio)
             result = json.loads(rec.FinalResult())
-        return [(w["word"], w["start"]) for w in result.get("result", [])]
+        return ([(w["word"], w["start"]) for w in result.get("result", [])], started - queued,
+                time.monotonic() - started)
 
     async def heard(self, pcm: bytes, label: str = "") -> bool:
         """Есть ли в начале фразы «Базарчик». Детектор не готов — True: пусть решает Whisper, как раньше.
@@ -262,22 +268,26 @@ class WakeWord:
         audio = to_16k_mono(pcm[: int(WINDOW_SEC * 48000) * 4])
         started = time.monotonic()
         try:
-            words = await asyncio.to_thread(self._spot, model, audio)
+            words, waited, worked = await asyncio.to_thread(self._spot, model, audio)
         except Exception as e:
             print(f"[wake] {label}: ошибка детектора, фраза уходит в Whisper: {e!r}")
             return True
         hit = called(words)
         self.stats["checked"] += 1
         self.stats["heard"] += hit
+        self.stats["work"] += worked
         if label:
             got = ", ".join(f"{w} {s:.1f}с" for w, s in words) or "тишина"
+            # всего = ожидание потока + очередь детектора (фразы по одной) + распознавание
             print(f"[wake] {label}: {got} → {'к боту' if hit else 'не к боту'} "
-                  f"({(time.monotonic() - started) * 1000:.0f} мс)")
+                  f"({(time.monotonic() - started) * 1000:.0f} мс: очередь {waited * 1000:.0f}, "
+                  f"распознавание {worked * 1000:.0f})")
         return hit
 
     def report(self) -> str:
         s = self.stats
-        return f"; детектор {self.state}: проверено {s['checked']}, с обращением {s['heard']}"
+        avg = f", в среднем {s['work'] / s['checked'] * 1000:.0f} мс на фразу" if s["checked"] else ""
+        return f"; детектор {self.state}: проверено {s['checked']}, с обращением {s['heard']}{avg}"
 
 
 detector = WakeWord()

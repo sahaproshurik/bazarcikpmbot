@@ -157,10 +157,20 @@ def _lang_code(name) -> Optional[str]:
     return name if len(name) == 2 else LANG_CODES.get(name)
 
 
-def _score(resp) -> Optional[float]:
+def _speech_segments(resp) -> Optional[list]:
+    """Сегменты, где есть речь. Whisper сам считает вероятность тишины (no_speech_prob) — если она высокая и он
+    при этом не уверен в тексте, это выдумка на шуме (правило из самого Whisper). Нет сегментов в ответе — None."""
+    segments = _get(resp, "segments")
+    if not segments:
+        return None
+    return [seg for seg in segments
+            if not (float(_get(seg, "no_speech_prob") or 0) > 0.6 and float(_get(seg, "avg_logprob") or 0) < -1.0)]
+
+
+def _score(segments) -> Optional[float]:
     """avg_logprob сегментов, взвешенный по их длительности."""
     total = weight = 0.0
-    for seg in _get(resp, "segments") or []:
+    for seg in segments or []:
         logprob = _get(seg, "avg_logprob")
         if logprob is None:
             continue
@@ -184,7 +194,10 @@ async def transcribe(audio: bytes, filename: str = "speech.wav", hint: str = "",
         text = (getattr(resp, "text", "") or "").strip()
         if not detailed:
             return text
-        return Transcript(text, _lang_code(_get(resp, "language")) or language, _score(resp))
+        segments = _speech_segments(resp)
+        if segments is not None:
+            text = " ".join((_get(seg, "text") or "").strip() for seg in segments).strip()
+        return Transcript(text, _lang_code(_get(resp, "language")) or language, _score(segments))
 
     models = [m for m in STT_MODELS if m not in _dead_stt] or STT_MODELS
     _, result = await _run(models, call, _dead_stt)

@@ -29,7 +29,8 @@ from discord.ext.commands.view import StringView
 import ai
 import whatsnew
 from cogs.voice_ai import say, answer_embed, detect_lang, TTS_VOICES
-from names import norm_name, all_aliases, find_member, name_score, named_in, said
+from names import (norm_name, all_aliases, aliases_of, find_member, name_score, named_in, said, spoken_name,
+                   hard_to_say)
 from config import TTS_SETTINGS
 from data import player_funds, guild_config, save_guild_cfg
 from utils import parse_duration, fmt_duration, utcnow
@@ -91,7 +92,30 @@ PHRASES = {
                     "sk": "Vypnúť pomalý režim v chate", "en": "Turn off slow mode"},
     "bad_filter":  {"ru": "Не понял фильтр: {why}.", "uk": "Не зрозумів фільтр: {why}.",
                     "sk": "Nerozumiem filtru: {why}.", "en": "I didn't get the filter: {why}."},
+    # Напоминания о прозвищах — когда бот не может разобрать имя на слух
+    "alias_use":   {"ru": "Не разобрал имя. Можно назвать прозвищем: {aliases}.",
+                    "uk": "Не розібрав ім'я. Можна назвати прізвиськом: {aliases}.",
+                    "sk": "Nerozumel som meno. Môžeš povedať prezývku: {aliases}.",
+                    "en": "I didn't catch the name. You can use a nickname: {aliases}."},
+    "alias_add":   {"ru": "Ник {name} на слух не разобрать. Дай прозвище: «Базарчик, запомни {mention} как …» "
+                          "или `!alias add`. Пока — кнопка «Подтверждаю».",
+                    "uk": "Нік {name} на слух не розібрати. Дай прізвисько: «Базарчик, запам'ятай {mention} як …» "
+                          "або `!alias add`. Поки що — кнопка «Подтверждаю».",
+                    "sk": "Prezývku {name} podľa sluchu nerozumiem. Daj mu prezývku: „Bazarčik, zapamätaj si {mention} "
+                          "ako …“ alebo `!alias add`. Zatiaľ — tlačidlo „Подтверждаю“.",
+                    "en": "I can't make out {name} by ear. Give them a nickname: “Bazarčik, remember {mention} as …” "
+                          "or `!alias add`. For now, use the “Подтверждаю” button."},
+    "alias_add_say": {"ru": "Ник не разобрать на слух — дай прозвище или нажми кнопку.",
+                      "uk": "Нік не розібрати на слух — дай прізвисько або натисни кнопку.",
+                      "sk": "Meno nerozumiem — daj prezývku alebo stlač tlačidlo.",
+                      "en": "I can't make out that name — add a nickname or press the button."},
+    "alias_tip":   {"ru": "Подсказка: людей можно звать прозвищами — «Базарчик, запомни @ник как Петя» или `!alias`.",
+                    "uk": "Підказка: людей можна кликати прізвиськами — «Базарчик, запам'ятай @нік як Петя» або `!alias`.",
+                    "sk": "Tip: ľudí môžeš volať prezývkami — „Bazarčik, zapamätaj si @nick ako Peťo“ alebo `!alias`.",
+                    "en": "Tip: you can call people by nicknames — “Bazarčik, remember @nick as Pete” or `!alias`."},
 }
+ALIAS_TIP_SEC = 10 * 60      # общая подсказка про прозвища — не чаще раза в 10 минут на сервер
+MISSING_PART = {"confirm": "нет «подтверждаю»", "verb": "нет действия", "name": "нет имени"}
 # что именно не расслышали — по типу параметра
 MISSING_WHAT = {
     "member":   {"ru": "кого именно", "uk": "кого саме", "sk": "koho presne", "en": "who exactly"},
@@ -521,7 +545,8 @@ NO_WORDS = {"нет", "не", "неа", "отмена", "отмени", "сто�
 
 
 FILLER_WORDS = {"ну", "а", "э", "ээ", "эм", "ой", "слушай", "базарчик"}
-CONFIRM_STEMS = ("podtverzhd", "pidtverdzh", "potvrdz", "confirm")          # подтверждаю / підтверджую / potvrdzujem
+# подтверждаю / підтверджую / potvrdzujem — и смесь: украинское слово, записанное Whisper по-русски («подтверджую»)
+CONFIRM_STEMS = ("podtverzhd", "pidtverdzh", "podtverdzh", "pidtverzhd", "potvrdz", "confirm")
 VERB_STEMS = {"ban": ("ban",), "kick": ("kik", "kick", "vygn", "vign", "vyhod"),
               "clear": ("udal", "vidal", "ochist", "vymaz", "delet", "clear")}
 
@@ -537,23 +562,25 @@ def yes_no(text: str) -> Optional[bool]:
     return None
 
 
-def strict_answer(text: str, p) -> Optional[bool]:
-    """Строгое подтверждение (кик, бан, очистка): True — сказали целиком «подтверждаю, забань Petya»,
-    False — отказ, None — неполно (короткое «да», без имени, без действия)."""
+def strict_check(text: str, p) -> tuple:
+    """Строгое подтверждение (кик, бан, очистка): (True, []) — сказали целиком «подтверждаю, забань Petya»,
+    (False, []) — отказ, (None, [чего нет]) — неполно: "confirm", "verb", "name" (для логов и подсказок).
+    Имя сверяется со всеми именами участника — ником, его частью и прозвищами, с падежом и транслитом."""
     raw = re.findall(r"\w+", (text or "").lower())
     if any(w in NO_WORDS for w in raw[:4]):
-        return False
+        return False, []
     words = [w for w in (norm_name(w) for w in raw) if w]
+    missing = []
     if not any(w.startswith(CONFIRM_STEMS) for w in words):
-        return None
+        missing.append("confirm")
     if not any(stem in w for w in words for stem in VERB_STEMS.get(p.action.key, ())):
-        return None
+        missing.append("verb")
     member = p.values.get("member")
     if member is not None and "{member}" in "".join(p.action.full.values()):   # у очистки участник — фильтр, не цель
         candidates = words + [a + b for a, b in zip(words, words[1:])]     # «Петя Иванов» — два слова
-        if not any(name_score(w, member) >= 0.8 for w in candidates):
-            return None
-    return True
+        if not (named_in(text, member) or any(name_score(w, member) >= 0.8 for w in candidates)):
+            missing.append("name")
+    return (None, missing) if missing else (True, [])
 
 
 # ── Поиск участника — names.py (ник, имя аккаунта, прозвища из !alias, падеж, транслит) ──
@@ -719,6 +746,8 @@ class Pending:
     trace: str = ""                     # та же команда для логов — свободный текст только длиной
     created: float = field(default_factory=time.monotonic)
     answers: int = 0                    # сколько непонятных ответов было, пока ждали «да»
+    name_misses: int = 0                # из них — без узнанного имени: после второго напоминаем про прозвища
+    alias_hinted: bool = False
     ready: bool = True                  # False — бот ещё договаривает вопрос, отвечать рано
     window: int = CONFIRM_SEC
     deadline: float = 0.0
@@ -772,6 +801,15 @@ def confirm_embed(p: Pending, status: str = None) -> discord.Embed:
         e.color = discord.Color.dark_grey()
     elif p.strict:
         e.add_field(name="Чтобы подтвердить, скажи или напиши (@бот …) целиком", value=f"«{p.phrase}»", inline=False)
+        member = p.values.get("member")
+        if member is not None and "{member}" in "".join(p.action.full.values()):
+            aliases = aliases_of(p.channel.guild.id, member.id)
+            if aliases[1:]:
+                e.add_field(name="Можно и другим прозвищем", value=", ".join(aliases[1:5]), inline=False)
+            elif not aliases and hard_to_say(member):
+                e.add_field(name="Ник трудно сказать голосом",
+                            value=f"Дай прозвище: «Базарчик, запомни {member.mention} как …» или `!alias add` — "
+                                  "а сейчас нажми «Подтверждаю».", inline=False)
         e.set_footer(text=f"Короткое «да» не подходит • {p.window} сек • только {p.user.display_name}")
     else:
         e.set_footer(text=f"Ответь «да» голосом или в чат, или нажми кнопку • {p.window} сек • "
@@ -784,6 +822,7 @@ class JarvisCog(commands.Cog):
         self.bot = bot
         self.pending: dict = {}                    # (guild_id, user_id) → Pending
         self.busy: set = set()                     # кому сейчас отвечаем в чате — второй запрос не запускаем
+        self.tipped: dict = {}                     # guild_id → когда последний раз напоминали про прозвища
         self._locks = defaultdict(asyncio.Lock)
 
     # ── Вход из voice_listen ──────────────────────────────────
@@ -797,17 +836,26 @@ class JarvisCog(commands.Cog):
             if not pending.ready:
                 print(f"[jarvis] {user.display_name}: фраза пришла, пока бот задаёт вопрос, — пропускаю")
                 return True
-            answer = strict_answer(question, pending) if pending.strict else yes_no(question)
+            answer, missing = strict_check(question, pending) if pending.strict else (yes_no(question), [])
             if answer is None:
                 pending.answers += 1
+                pending.name_misses += "name" in missing
+                # имя не узнано дважды — напоминаем про прозвища (один раз за подтверждение)
+                alias_hint = pending.name_misses >= 2 and not pending.alias_hinted
                 print(f"[jarvis] {user.display_name}: ответ на подтверждение "
-                      f"{'неполный' if pending.strict else 'непонятен'} (слов: {len(question.split())}, "
-                      f"{pending.answers}-й, прошло {pending.age:.0f} из {pending.window} с)"
-                      + (" — подсказываю" if pending.answers == 1 else " — молча жду дальше"))
+                      f"{'неполный' if pending.strict else 'непонятен'} (слов: {len(question.split())}"
+                      + (f"; {', '.join(MISSING_PART[m] for m in missing)}" if missing else "")
+                      + f", {pending.answers}-й, прошло {pending.age:.0f} из {pending.window} с)"
+                      + (" — подсказываю" if pending.answers == 1 else " — напоминаю про прозвища" if alias_hint
+                         else " — молча жду дальше"))
                 if pending.answers == 1:            # подсказываем один раз, дальше не тратим голос и запросы
                     hint = (tr("say_full", pending.lang, phrase=pending.phrase) if pending.strict
                             else tr("yes_no", pending.lang))
                     await self.tell(channel, user, question, vc, source, hint, remember=False)
+                elif alias_hint:
+                    pending.alias_hinted = True
+                    await self.alias_reminder(channel, user, question, vc, source, pending.values["member"],
+                                              pending.lang)
                 self.await_answer(pending)
             else:
                 await self.resolve(pending, answer)
@@ -899,13 +947,19 @@ class JarvisCog(commands.Cog):
         try:
             values = await self.convert(ctx, action, intent.args, lang, vc)
         except NotUnderstood as e:
-            return await refuse(f"не разобраны параметры ({args_note(intent.args)})", str(e))
+            await refuse(f"не разобраны параметры ({args_note(intent.args)})", str(e))
+            if any(p.kind == "member" for p in action.params):
+                await self.alias_tip(channel, lang)
+            return
         for p in action.params:                      # кого выбрал ИИ — должен быть назван во фразе
             member = values.get(p.name) if p.kind == "member" else None
             if (member is not None and member != user and not named_in(question, member)
                     and not said(question, [str(intent.args.get(p.name) or "")])):   # «Васе» → ИИ: «Вася» → Vasyl
-                return await refuse(f"ИИ выбрал {member.display_name}, но во фразе его имени нет — переспрашиваю",
-                                    tr("not_named", lang))
+                await refuse(f"ИИ выбрал {member.display_name}, но во фразе его имени нет — переспрашиваю",
+                             tr("not_named", lang))
+                if aliases_of(channel.guild.id, member.id):
+                    return await self.alias_tip(channel, lang)
+                return await self.alias_reminder(channel, user, question, vc, source, member, lang)
         if action.hierarchy:
             from cogs.moderation import hierarchy_error
             if err := hierarchy_error(ctx, values["member"]):
@@ -967,7 +1021,7 @@ class JarvisCog(commands.Cog):
                     raise NotUnderstood(tr("not_found", lang, name=text))
                 except ValueError as e:
                     raise NotUnderstood(tr("ambiguous", lang, name=str(e)))
-                values[p.name], spoken[p.name] = member, member.display_name
+                values[p.name], spoken[p.name] = member, spoken_name(member)   # прозвище: его можно произнести
             elif p.kind == "amount":
                 amount = parse_amount(text)
                 if amount is None:
@@ -1117,6 +1171,31 @@ class JarvisCog(commands.Cog):
         print(f"[jarvis] {p.user.display_name}: пересказ итога за {time.monotonic() - started:.1f} с, "
               f"{len(text)} символов")
         return text
+
+    async def alias_reminder(self, channel, user, question, vc, source, member, lang):
+        """Имя на слух не узнаётся: есть прозвища — называем их; нет, а ник не произнести — просим завести."""
+        aliases = aliases_of(channel.guild.id, member.id)
+        if aliases:
+            text = tr("alias_use", lang, aliases=", ".join(aliases[:4]))
+            return await self.tell(channel, user, question, vc, source, text, remember=False)
+        if not hard_to_say(member):
+            return await self.alias_tip(channel, lang)
+        print(f"[jarvis] {member.display_name}: ник не произнести, прозвищ нет — прошу завести")
+        await self.tell(channel, user, question, vc, source,
+                        tr("alias_add", lang, name=member.display_name, mention=member.mention),
+                        speak_text=tr("alias_add_say", lang), remember=False)
+
+    async def alias_tip(self, channel, lang):
+        """Общая подсказка про прозвища — в чат, не чаще раза в ALIAS_TIP_SEC на сервер."""
+        now = time.monotonic()
+        if now - self.tipped.get(channel.guild.id, -ALIAS_TIP_SEC) < ALIAS_TIP_SEC:
+            return
+        self.tipped[channel.guild.id] = now
+        print(f"[jarvis] Напоминаю про прозвища в чате (не чаще раза в {ALIAS_TIP_SEC // 60} мин)")
+        try:
+            await channel.send(f"💡 {tr('alias_tip', lang)}", delete_after=120)
+        except discord.HTTPException:
+            pass
 
     def remember(self, p: Pending, text: str):
         voice_cog = self.bot.get_cog("VoiceAICog")
