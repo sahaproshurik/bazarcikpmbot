@@ -15,9 +15,9 @@ Discord шифрует голос (DAVE), и py-cord пока помечает �
 а голосовые сообщения работают всегда.
 """
 import asyncio
-import difflib
 import io
 import logging
+import os
 import re
 import threading
 import time
@@ -37,8 +37,7 @@ import local_tts
 import wake_word
 from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
-from names import (WORD_RE, aliases_of, all_aliases, fix_names, hard_to_say, loose_name, norm_name, said,
-                   spoken_name)
+from names import WORD_RE, aliases_of, all_aliases, fix_names, hard_to_say, norm_name, said, spoken_name
 
 try:
     import davey
@@ -126,7 +125,8 @@ SILENCE_SEC     = 0.9        # пауза, после которой фраза 
 MIN_SPEECH_SEC  = 0.6        # короче — покашливание или щелчок (предзапись не в счёт)
 MAX_SPEECH_SEC  = 20         # длиннее не копим: на любой вопрос хватает
 VOICE_THRESHOLD = 450        # громкость (RMS), ниже которой кадр считается тишиной
-PREROLL_SEC     = 0.3        # столько звука до первого громкого кадра добавляем к фразе: тихое «б» в «Базарчик»
+PREROLL_SEC     = 0.5        # столько звука до первого громкого кадра добавляем к фразе: тихое «б» в «Базарчик»
+                             # (было 0.3 — в войсе 11.11 всё равно «Азарчик», «Пазарчик», «Pasalcik»)
 TAIL_SEC        = 0.25       # тишины после последнего громкого кадра оставляем — остальную паузу в Whisper не шлём
 FRAME_BYTES     = 3840       # 20 мс PCM 48 кГц стерео — один пакет Opus
 STT_RATE        = 16000      # Whisper всё равно переводит звук в 16 кГц — шлём сразу так, файл втрое меньше
@@ -148,7 +148,9 @@ WAKE_HINT       = "Базарчик, BazarčikPM"
 OK_SAID         = {"ru": "Хорошо.", "uk": "Добре.", "sk": "Dobre.", "en": "Okay."}
 MORE_IN_CHAT    = {"ru": "Остальное — в чате.", "uk": "Решта — в чаті.", "sk": "Zvyšok je v chate.",
                    "en": "The rest is in the chat."}
-SPEECH_CHARS    = 130        # голосом — одно-два предложения ответа ИИ (~10 с), полностью — в чате
+SPEECH_CHARS    = 130        # SPEECH_FULL=0: голосом — одно-два предложения ответа ИИ (~10 с), полностью — в чате
+# Переключатель «читать ответ целиком»: включён по умолчанию; SPEECH_FULL=0 — только начало и «Остальное — в чате»
+SPEECH_FULL     = os.getenv("SPEECH_FULL", "1").strip().lower() not in ("0", "off", "false", "no")
 MUMBLE_SCORE    = -1.0       # уверенность Whisper ниже — короткая фраза в окне вопроса считается неразборчивой
 STOP_WORDS      = {"стоп", "хватит", "замолчи", "заткнись", "тихо", "молчи", "стой", "досить", "годі", "тихіше",
                    "stop", "stoj", "dost", "dosť", "ticho", "prestaň", "enough", "quiet", "shut"}
@@ -168,8 +170,11 @@ LANG_WORDS      = {
            "anglicky"},
 }
 DEFAULT_LANG    = "ru"
+# Обращение в начале фразы: «Базарчик» в любом написании или «бот / ботик / bot» («Бот, сколько денег»).
+# «Ботинок», «боты», «вот бот» — не обращение.
 WAKE_RE = re.compile(
-    r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?(?:баз[аa]р[\s,-]{0,2}ч\w*|baz[aá]r[\s,-]{0,2}[cč]h?\w*)[\s,.!?:;…—-]*",
+    r"^\W*(?:(?:эй|ей|hey|слушай|ну|а)\W+)?"
+    r"(?:баз[аa]р[\s,-]{0,2}ч\w*|baz[aá]r[\s,-]{0,2}[cč]h?\w*|(?:бот(?:ик\w*)?|bot(?:[ií]k\w*)?)\b)[\s,.!?:;…—-]*",
     re.IGNORECASE)
 
 
@@ -195,6 +200,7 @@ def split_wake(text: str):
 
 
 CYRILLIC_LANGS = {"ru", "uk"}
+LANG_MARGIN    = 0.15        # Whisper на двух языках: другой язык берём, только если увереннее на столько
 
 
 def script_ok(text: str, lang: str) -> bool:
@@ -208,25 +214,58 @@ def script_ok(text: str, lang: str) -> bool:
     return cyrillic >= 0.5 if lang in CYRILLIC_LANGS else cyrillic <= 0.5
 
 
-WAKE_KEY   = loose_name("Базарчик")
-WAKE_LEADS = {"эй", "ей", "hey", "слушай", "ну", "а"}
+
+
+# Мягкая проверка «Базарчик» после распознавания: текст — в кириллицу, звонкие и глухие согласные и безударные
+# гласные схлопнуты, сравнение по расстоянию Левенштейна. На примерах из войса 11.11: «Азарчик», «Bazaczek»,
+# «Pasalcik» — 0.88, «BsBazarčik» — 0.80, «Azara cheek» — 0.75, «Пазарчик» — 1.0; «База, база» и «Похоже на» — 0.50,
+# «Значит, как» — 0.38, «сразу 6» — 0.25. Порог 0.72; детектор фразу уже отфильтровал.
+LAT2CYR  = (("shch", "щ"), ("sch", "щ"), ("cz", "ч"), ("ch", "ч"), ("sz", "ш"), ("sh", "ш"), ("zh", "ж"), ("ee", "и"),
+            ("č", "ч"), ("š", "ш"), ("ž", "ж"), ("c", "ч"))            # порядок важен: сначала сочетания букв
+LAT1CYR  = str.maketrans(dict(zip("abdefghijklmnoprstuvwyz", "абдефгхийклмнопрстуввиз")))
+COLLAPSE = str.maketrans({"б": "п", "в": "ф", "г": "к", "д": "т", "ж": "ш", "з": "с",
+                          "е": "и", "э": "и", "ы": "и", "о": "а", "я": "а", "ё": "а"})
+WAKE_THRESHOLD = 0.72
+
+
+def sound_key(text: str) -> str:
+    text = (text or "").lower()
+    for a, b in LAT2CYR:
+        text = text.replace(a, b)
+    return re.sub(r"[^а-яё ]", " ", text.translate(LAT1CYR)).translate(COLLAPSE)
+
+
+def similarity(a: str, b: str) -> float:
+    """1 − расстояние Левенштейна / длина длинной строки."""
+    if not a or not b:
+        return 0.0
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return 1 - row[-1] / max(len(a), len(b))
+
+
+WAKE_SOUND = sound_key("базарчик")
 
 
 def fix_wake(text: str) -> tuple:
-    """Распознавание пишет «Базарчик» как слышит — «Bazaczek» (Parakeet решил, что польский), «Базарчек», «База чек»,
-    «Азарчик» (начало «Б» срезал микрофон), «BsBazarčik» (Whisper). Первое слово (или два), похожее на «Базарчик»
-    (межъязыковой ключ от 0.7, начинается на «б» или «а»), заменяем — тогда split_wake его узнает. Зовём только для
-    фраз из войса, где детектор «Базарчик» уже услышал. (текст, заменили ли)."""
-    words = list(WORD_RE.finditer(text or ""))
-    start = 1 if words and words[0].group().lower() in WAKE_LEADS else 0
-    for size in (1, 2):
-        part = words[start:start + size]
-        if len(part) < size:
-            break
-        key = loose_name("".join(w.group() for w in part))
-        if key[:1] in ("b", "a") and difflib.SequenceMatcher(None, key, WAKE_KEY).ratio() >= 0.7:
-            return text[:part[0].start()] + "Базарчик" + text[part[-1].end():], True
-    return text, False
+    """Распознавание пишет «Базарчик» как слышит — «Азарчик» (начало срезал микрофон), «Bazaczek» (Parakeet решил,
+    что польский), «Pasalcik», «Azara cheek», «BsBazarčik». Среди первых трёх слов (и их слитных пар и троек)
+    ищем похожее (мягкая проверка, порог WAKE_THRESHOLD): нашли — всё до него включительно заменяем на «Базарчик»,
+    тогда split_wake его узнает. Зовём только для фраз из войса, где детектор что-то уже услышал.
+    (текст, заменили ли, лучшая похожесть — для лога)."""
+    words = list(WORD_RE.finditer(text or ""))[:3]
+    spans = [(i, i) for i in range(len(words))] + [(0, n) for n in (1, 2) if n < len(words)]
+    best, best_end = 0.0, None
+    for a, b in spans:
+        score = similarity(sound_key("".join(w.group() for w in words[a:b + 1])).replace(" ", ""), WAKE_SOUND)
+        if score > best:
+            best, best_end = score, b
+    if best >= WAKE_THRESHOLD:
+        return "Базарчик, " + text[words[best_end].end():].lstrip(" ,.!?:;…—-"), True, best
+    return text, False, best
 
 
 def listen_lang(guild_id) -> str:
@@ -247,9 +286,10 @@ def parse_lang(word: str):
 
 
 def speech_part(text: str, lang: str = DEFAULT_LANG) -> str:
-    """Что сказать голосом: первые одно-два предложения, не длиннее SPEECH_CHARS; отрезали — «остальное в чате»."""
+    """Что сказать голосом. По умолчанию (SPEECH_FULL) — ответ целиком: перебить можно «Базарчик, стоп».
+    SPEECH_FULL=0 — первые одно-два предложения, не длиннее SPEECH_CHARS, и «остальное в чате»."""
     text = " ".join((text or "").split())
-    if len(text) <= SPEECH_CHARS:
+    if SPEECH_FULL or len(text) <= SPEECH_CHARS:
         return text
     spoken = ""
     for sentence in re.split(r"(?<=[.!?…])\s+", text)[:2]:
@@ -314,12 +354,14 @@ def known_names(guild, members=()) -> list:
 
 
 async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiting: bool = False, info: dict = None,
-                    hint: str = WAKE_HINT, names=None):
+                    hint: str = WAKE_HINT, names=None, wake: str = "bazarchik"):
     """Распознаёт фразу на языке сервера и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
     waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения.
     info — сюда для логов кладутся движок, язык, уверенность Whisper и число запросов в Groq (без текста фразы).
     names — имена для поправки (known_names): тогда фраза из войса (WAV) сначала идёт в Parakeet на сервере бота;
     не готов, ошибся или ничего не услышал — в Groq Whisper, как раньше.
+    wake — что услышал детектор (wake_word.wake_kind): только при уверенном «bazarchik» фразу, где Parakeet обращения
+    не нашёл, перепроверяет Whisper; «bot», «maybe» и «unknown» решает текст Parakeet — без запроса в Groq.
     hint — подсказка Whisper с именами (whisper_hint); если Groq её не примет, повторяем с одним «Базарчик»."""
     info = {} if info is None else info
     info["requests"], heard = 0, None
@@ -330,14 +372,18 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
             print(f"[listen] Parakeet не справился ({e}) — распознаю через Groq Whisper")
         else:
             text, fixed = fix_names(text, names)
-            if text and split_wake(text) is None:
-                text, info["wake_fixed"] = fix_wake(text)
-            if not text:
+            if text and split_wake(text) is None and not waiting:
+                text, info["wake_fixed"], info["wake_score"] = fix_wake(text)
+            to_bot = waiting or split_wake(text) is not None
+            if not text and (waiting or wake == "bazarchik"):
                 info["empty"] = True      # Parakeet ничего не услышал — пусть проверит Whisper
+            elif not to_bot and wake == "bazarchik":
+                info["nowake"] = True     # детектор «Базарчик» услышал уверенно, а Parakeet — нет: решит Whisper
+            elif not to_bot:              # «бот», обрывок или детектор не готов — обращения в тексте нет, не к боту
+                heard = ai.Transcript(text, lang, None)
+                info.update(engine="Parakeet", fixed=fixed)
             elif not script_ok(text, lang):
                 info["script"] = True     # «Bazaczek zwań» на русском войсе — Parakeet принял речь за другой язык
-            elif split_wake(text) is None and not waiting and wake_word.detector.ready:
-                info["nowake"] = True     # детектор «Базарчик» услышал, а Parakeet — нет: решит Whisper с подсказкой
             elif names and PERSON_RE.search(text) and not said(split_wake(text) or text, names):   # без «Базарчик»
                 info["person"] = True     # просьба про человека, а имени Parakeet не расслышал — Whisper с подсказкой
                 # обращение Parakeet услышал: если Whisper «Базарчик» потеряет (бывает, когда оно же в подсказке),
@@ -346,32 +392,53 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
             else:
                 heard = ai.Transcript(text, lang, None)
                 info.update(engine="Parakeet", fixed=fixed)
-    if heard is None:
-        info["engine"], info["requests"] = "Whisper", 1
+
+    async def whisper(language: str) -> tuple:
+        """(текст Whisper, сколько запросов ушло в Groq)."""
         try:
-            try:
-                heard = await ai.transcribe(audio, filename, hint=hint, language=lang, detailed=True)
-            except ai.AIError as e:
-                if hint == WAKE_HINT:
-                    raise
-                print(f"[listen] Подсказка с именами не принята ({e}) — распознаю без неё")
-                info["requests"] += 1
-                heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+            return await ai.transcribe(audio, filename, hint=hint, language=language, detailed=True), 1
+        except ai.AIError as e:
+            if hint == WAKE_HINT:
+                raise
+            print(f"[listen] Подсказка с именами не принята ({e}) — распознаю без неё")
+            return await ai.transcribe(audio, filename, hint=WAKE_HINT, language=language, detailed=True), 2
+
+    used = lang
+    if heard is None:
+        info["engine"] = "Whisper"
+        try:
+            if info.get("script"):
+                # акцентная речь: Parakeet услышал другой язык — Whisper на двух, берём увереннее (avg_logprob).
+                # Войс 11.11: с принудительным ru средняя уверенность −0.9, со словацким — −0.34
+                alt = "sk" if lang in CYRILLIC_LANGS else "ru"
+                results = await asyncio.gather(whisper(lang), whisper(alt), return_exceptions=True)
+                ok = [(t, n, code) for r, code in zip(results, (lang, alt)) if not isinstance(r, BaseException)
+                      for t, n in [r]]
+                if not ok:
+                    raise results[0]
+                info["requests"] = sum(n for _, n, _ in ok) + len(results) - len(ok)
+                # у языка прослушки фора LANG_MARGIN: при почти равной уверенности другой язык чаще даёт мусор
+                heard, _, used = max(ok, key=lambda x: (x[0].score if x[0].score is not None else -99)
+                                     + (LANG_MARGIN if x[2] == lang else 0))
+                info["alts"] = ", ".join(f"{code} {t.score:.2f}" if t.score is not None else code for t, _, code in ok)
+            else:
+                heard, info["requests"] = await whisper(lang)
         except ai.AIError as e:
             if not info.get("person"):
                 raise
             print(f"[listen] Whisper не ответил ({e}) — беру текст Parakeet как есть")
             heard, info["engine"] = ai.Transcript(text, lang, None), "Parakeet"   # text — от Parakeet, уже с поправкой
     info["head"] = " ".join((heard.text or "").split()[:2])[:40]   # для лога, если обращения не нашлось
-    info.update(lang=lang, score=heard.score)
+    info.update(lang=used, score=heard.score)
     text = drop_junk(heard.text)
     if text != " ".join((heard.text or "").split()):
         info["junk"] = True               # в лог — только факт, без текста
     question = split_wake(text)
     if question is None and names is not None and not waiting and info.get("engine") == "Whisper":
-        text, fixed = fix_wake(text)      # «Азарчик», «BsBazarčik» от Whisper — детектор обращение уже услышал
+        text, fixed, score = fix_wake(text)   # «Азарчик», «BsBazarčik» от Whisper — детектор что-то уже услышал
         question = split_wake(text)
         info["wake_fixed"] = info.get("wake_fixed") or fixed
+        info["wake_score"] = max(info.get("wake_score") or 0, score)
     if question is None and (waiting or info.get("wake")) and text:
         question = text                   # ждали ответ или обращение уже услышал Parakeet
     return question
@@ -382,16 +449,19 @@ def whisper_note(info: dict, seconds: float) -> str:
     score = info.get("score")
     lang = f"{info.get('lang')} ({score:.2f})" if score is not None else str(info.get("lang"))
     junk = ", убрал выдуманное на шуме" if info.get("junk") else ""
+    # похожесть первых слов на «Базарчик» (мягкая проверка) — чтобы по логу подбирать порог WAKE_THRESHOLD
+    score_note = (f", похоже на «Базарчик» {info['wake_score']:.2f}" if info.get("wake_score") is not None
+                  else "")
+    wake = (", «Базарчик» узнан по похожему слову" if info.get("wake_fixed") else score_note)
     if info.get("engine") == "Parakeet":
         fixed = f", имён поправлено {info['fixed']}" if info.get("fixed") else ""
-        fixed += ", «Базарчик» узнан по похожему слову" if info.get("wake_fixed") else ""
-        return f"Parakeet {lang}{fixed}, {seconds:.1f} с{junk}"
+        return f"Parakeet {lang}{fixed}{wake}, {seconds:.1f} с{junk}"
     empty = ("Parakeet ничего не услышал → " if info.get("empty") else
              "Parakeet не расслышал «Базарчик» → " if info.get("nowake") else
              "Parakeet записал другим алфавитом → " if info.get("script") else
              "Parakeet: просьба про человека без известного имени → " if info.get("person") else "")
-    wake = ", «Базарчик» узнан по похожему слову" if info.get("wake_fixed") else ""
-    return f"{empty}Whisper {lang}, запросов в Groq {info.get('requests', 0)}{wake}, {seconds:.1f} с{junk}"
+    alts = f" (языки: {info['alts']})" if info.get("alts") else ""
+    return f"{empty}Whisper {lang}{alts}, запросов в Groq {info.get('requests', 0)}{wake}, {seconds:.1f} с{junk}"
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -583,7 +653,8 @@ class ListenSession:
 
     @staticmethod
     def counts_note(c: dict) -> str:
-        return (f"фраз {c.get('phrases', 0)}, детектор пропустил {c.get('to_bot', 0)}, "
+        return (f"фраз {c.get('phrases', 0)}, детектор пропустил {c.get('to_bot', 0)} "
+                f"(и обрывков на проверку {c.get('maybe', 0)}), "
                 f"без «Базарчик» (ждали ответ) {c.get('bypass', 0)}, запросов в Whisper {c.get('whisper', 0)}, "
                 f"вопросов боту {c.get('questions', 0)}, отсеял Whisper {c.get('dropped', 0)}, "
                 f"мимо лимита {c.get('limit', 0)}, коротких в окне подтверждения {c.get('short', 0)}, "
@@ -721,7 +792,7 @@ class ListenSession:
         self.announced = True
         print(f"[listen] Готов слушать через {time.monotonic() - self.started:.1f} с; детектор "
               f"{wake_word.detector.state}" + (f" ({note})" if note else ""))
-        text = f"✅ Готов слушать {self.vc.channel.mention}! Говорите: **«Базарчик, …»**"
+        text = f"✅ Готов слушать {self.vc.channel.mention}! Говорите: **«Базарчик, …»** или **«Бот, …»**"
         if note:
             text += f"\n{note}"
         try:
@@ -841,15 +912,17 @@ class ListenSession:
             self.count("bypass")
             print(f"[listen] {tag}: фраза {seconds:.1f} с — бот ждёт от него вопрос или ответ, идёт без детектора "
                   f"(окно ещё {self.followup[user.id] - started:.0f} с)")
-        elif not await wake_word.detector.heard(pcm, f"{tag} ({seconds:.1f} с)"):
-            return                        # «Базарчик» не прозвучал — фраза не уходит даже в Whisper
-        else:
-            self.count("to_bot")
+        wake = ""
+        if not waiting:
+            wake = await wake_word.detector.heard(pcm, f"{tag} ({seconds:.1f} с)")
+            if not wake:
+                return                    # обращения не прозвучало — фраза не уходит даже в распознавание
+            self.count("maybe" if wake == "maybe" else "to_bot")
         talk = waiting and (self.in_talk(user) or self.queued_call(user) is None)
         if talk:
             self.serving += 1             # ответ собеседника: разговор не кончится, пока фраза в работе
         try:
-            heard = await self.hear(user, pcm, tag, started, waiting)
+            heard = await self.hear(user, pcm, tag, started, waiting, wake)
             del pcm
             if heard is None:
                 return
@@ -889,7 +962,8 @@ class ListenSession:
             self.count("busy")
             print(f"[listen] {tag}: бот договаривает вопрос-подтверждение — фраза пропущена")
             return
-        if not await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с), бот говорит"):
+        wake = await wake_word.detector.heard(pcm, f"{tag} ({len(pcm) / BYTES_PER_SEC:.1f} с), бот говорит")
+        if not wake:
             return
         if not self._stt_allowed():
             self.count("limit")
@@ -897,7 +971,7 @@ class ListenSession:
         audio, lang, info = await asyncio.to_thread(to_wav, pcm), listen_lang(self.guild.id), {}
         del pcm
         try:
-            question = await recognize(audio, "speech.wav", lang, False, info, names=())   # «стоп» — без имён
+            question = await recognize(audio, "speech.wav", lang, False, info, names=(), wake=wake)   # «стоп» — без имён
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return
@@ -926,8 +1000,9 @@ class ListenSession:
         except Exception as e:
             print(f"[listen] Не удалось ответить голосом: {e!r}")
 
-    async def hear(self, user, pcm: bytes, tag: str, started: float, waiting: bool):
-        """Лимит → Whisper. (вопрос, язык, строка для лога) или None — фраза не к боту, лимит или ошибка."""
+    async def hear(self, user, pcm: bytes, tag: str, started: float, waiting: bool, wake: str = ""):
+        """Лимит → Parakeet/Whisper. (вопрос, язык, строка для лога) или None — фраза не к боту, лимит или ошибка.
+        wake — что услышал детектор (wake_word.wake_kind)."""
         if not self._stt_allowed():
             self.count("limit")
             print(f"[listen] {tag}: пропущена — лимит {STT_LIMIT[0]} распознаваний за {STT_LIMIT[1] // 60} мин")
@@ -942,7 +1017,7 @@ class ListenSession:
         try:
             members = getattr(self.vc.channel, "members", [])
             question = await recognize(audio, "speech.wav", lang, waiting, info, whisper_hint(self.guild, members),
-                                       names=known_names(self.guild, members))
+                                       names=known_names(self.guild, members), wake=wake or "bazarchik")
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return None
@@ -1118,8 +1193,8 @@ class VoiceListenCog(commands.Cog):
         title = "🎙️ Слушаю войс — можно говорить" if ready else "🎙️ Захожу в войс — секунду…"
         e = discord.Embed(title=title, color=discord.Color.teal(), description=(
             f"Канал: {voice.channel.mention}\n"
-            "Обращайся: **«Базарчик, …»** — отвечу голосом и продублирую в чат.\n\n"
-            "🔒 Звук хранится только в памяти до распознавания (Groq Whisper) и сразу удаляется, "
+            "Обращайся: **«Базарчик, …»** или **«Бот, …»** — отвечу голосом и продублирую в чат.\n\n"
+            "🔒 Звук хранится только в памяти до распознавания (на сервере бота или в Groq Whisper) и сразу удаляется, "
             "фразы без обращения никуда не записываются."
             + (" «Базарчик» сначала слышит детектор прямо на сервере бота — в Groq уходят только фразы "
                "с обращением.\n" if wake_word.ENABLED else "\n") +

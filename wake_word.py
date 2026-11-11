@@ -41,9 +41,10 @@ ENABLED      = os.getenv("LOCAL_WAKE", "1").strip().lower() not in ("0", "off", 
 MODEL_URL    = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 MODEL_SHA256 = "961d5ff98a17f4aa6de69864d0aa71fa5bac682301d2b5d17a3f24c5c99a46d4"
 MODEL_DIR    = os.path.abspath("vosk-wake-ru")
-# Фраза начинается с 0.3 с предзаписи (voice_listen.PREROLL_SEC) — на них сдвинуты оба порога.
-WINDOW_SEC   = 2.3           # слушаем только начало фразы: обращение стоит первым, «Слушай, Базарчик» влезает
-WAKE_BY_SEC  = 1.5           # «базар» должен начаться не позже — дальше уже не обращение, а середина фразы
+# Фраза начинается с 0.5 с предзаписи (voice_listen.PREROLL_SEC) — на них сдвинуты оба порога.
+WINDOW_SEC   = 2.5           # слушаем только начало фразы: обращение стоит первым, «Слушай, Базарчик» влезает
+WAKE_BY_SEC  = 1.7           # «базар» должен начаться не позже — дальше уже не обращение, а середина фразы
+MAYBE_TAIL_SEC = 1.0         # одинокий «чик/чек» не позже — возможно, обрывок «Базарчик» (начало срезал микрофон)
 # Слова-соперники: похожи на «базар» + «чик», но обращением не являются («базилик», «бабах, и чик»,
 # «базар чиста», «базаре»). Когда в словаре только «базар», «чик» и [unk], модели не из чего выбрать, и такие
 # фразы она слышит как обращение. С соперниками ложных срабатываний на замерах нет (37/37 против 33/37),
@@ -58,16 +59,26 @@ RIVALS       = ("чика", "чику", "базара", "базаре", "баз�
 # Живой войс 11.11 на сервере: «Базарчик» слышался и как «базар чип». Хвосты «чип», «чих», «чики» теперь тоже
 # обращение: ложное срабатывание стоит одно локальное распознавание Parakeet (~0.5 с), а не запрос в Groq,
 # и обращение по тексту всё равно проверяется.
-MODES        = {"rivals": (("базар", "чик", "[unk]", *RIVALS), ("базар", "базары", "базара", "база"),
+# Второе обращение — «бот» («Бот, сколько денег», «Ботик, …», «Bot, …»). «Ботик» в словаре модели нет — она слышит
+# его как «бот» + что-то. Соперники нужны, чтобы «вот, короче…» не становилось обращением.
+# «Ботинок» и «ботаник» в начале фразы — так модель слышит «Ботик» (тест 11.11): тоже «бот», решит текст Parakeet.
+BOT_WORDS    = ("бот", "ботинок", "ботаник")
+BOT_RIVALS   = ("вот", "кот", "пот", "бок", "боты", "бота", "боту", "ботом", "робот", "работ")
+MODES        = {"rivals": (("базар", "чик", "[unk]", *RIVALS, *BOT_WORDS, *BOT_RIVALS),
+                           ("базар", "базары", "базара", "база"),
                            ("чик", "чика", "чику", "чек", "чирик", "чип", "чих", "чики")),
                 "classic": (("базар", "чик", "[unk]"), ("базар",), ("чик",))}
+# Обрывки: одно «база», «базу», «базарить» или одно «чик/чек» в начале фразы. Живой войс 11.11: так детектор слышал
+# «Базарчик» со срезанным началом или смазанным концом. Это «возможно» — фразу распознаёт Parakeet на сервере,
+# и обращение решает мягкая проверка текста (voice_listen.wake_score), без запроса в Groq.
+MAYBE_HEADS  = ("базар", "базары", "базара", "база", "базу", "базарить")
 WAKE_GAP_SEC = 1.0           # «чик» начинается не позже чем через секунду после «базар» — иначе это два слова
 MODE         = os.getenv("WAKE_MODE", "rivals").strip().lower()
 if MODE not in MODES:
     print(f"[wake] WAKE_MODE={MODE!r} не знаю — беру rivals (есть: {', '.join(MODES)})")
     MODE = "rivals"
 # в словаре на диске — слова обоих режимов: переключение WAKE_MODE не требует новой модели
-KEEP_WORDS   = ("<eps>", "!SIL", "[unk]", "#0", "<s>", "</s>", "базар", "чик", *RIVALS)
+KEEP_WORDS   = ("<eps>", "!SIL", "[unk]", "#0", "<s>", "</s>", "базар", "чик", *RIVALS, *BOT_WORDS, *BOT_RIVALS)
 # файлы модели, которые нужны для поиска по словарю (Gr.fst — граф свободной речи — не нужен)
 NEEDED = ("am/final.mdl", "conf/model.conf", "conf/mfcc.conf", "graph/HCLr.fst", "graph/disambig_tid.int",
           "graph/phones/word_boundary.int", "ivector/final.dubm", "ivector/final.ie", "ivector/final.mat",
@@ -93,6 +104,22 @@ def called(words, mode: str = None) -> bool:
     _, heads, tails = MODES[mode or MODE]
     return any(a[0] in heads and b[0] in tails and a[1] <= WAKE_BY_SEC and b[1] - a[1] <= WAKE_GAP_SEC
                for a, b in zip(words, words[1:]))
+
+
+def wake_kind(words, mode: str = None) -> str:
+    """Что услышал детектор: «bazarchik» — обращение, «bot» — «бот» в начале фразы, «maybe» — обрывок «Базарчик»
+    («база» или «чик» в одиночку), "" — не к боту."""
+    mode = mode or MODE
+    if called(words, mode):
+        return "bazarchik"
+    if mode != "rivals":
+        return ""
+    if any(w in BOT_WORDS and s <= WAKE_BY_SEC for w, s in words):
+        return "bot"
+    tails = MODES[mode][2]
+    if any((w in MAYBE_HEADS and s <= WAKE_BY_SEC) or (w in tails and s <= MAYBE_TAIL_SEC) for w, s in words):
+        return "maybe"
+    return ""
 
 
 def _model_words(model_dir: str) -> set:
@@ -335,42 +362,47 @@ class WakeWord:
                                    initializer=_worker_init, initargs=(path, CORES))
         return pool, f"процессов {WORKERS}"
 
-    async def heard(self, pcm: bytes, label: str = "") -> bool:
-        """Есть ли в начале фразы «Базарчик». Детектор не готов — True: пусть решает Whisper, как раньше.
+    async def heard(self, pcm: bytes, label: str = "") -> str:
+        """Что в начале фразы (wake_kind): «bazarchik», «bot», «maybe» или "" — не к боту. Детектор не готов —
+        «unknown»: пусть решает распознавание текста, как раньше. Пустая строка — ложь, остальное — истина.
         label («#12 Nikita (2.4 с)») — для строки в логе. В лог попадает только то, что услышал детектор:
-        его словарь — «базар», «чик» и [unk] (всё остальное), так что содержание фразы туда не утекает."""
+        его словарь — «базар», «чик», «бот», соперники и [unk] (всё остальное), так что содержание фразы не утекает."""
         pool = self.pool
         if pool is None:
             if label:
-                print(f"[wake] {label}: детектор {self.state} → фраза идёт в Whisper")
-            return True
+                print(f"[wake] {label}: детектор {self.state} → фразу проверит распознавание")
+            return "unknown"
         started, sent = time.monotonic(), time.time()
         try:
             words, began, worked = await asyncio.get_running_loop().run_in_executor(
                 pool, _worker_spot, pcm[: int(WINDOW_SEC * 48000) * 4], grammar())
         except BrokenExecutor as e:
             self._drop(f"процесс детектора упал ({type(e).__name__})")
-            return True
+            return "unknown"
         except Exception as e:
-            print(f"[wake] {label}: ошибка детектора, фраза уходит в Whisper: {e!r}")
-            return True
+            print(f"[wake] {label}: ошибка детектора, фразу проверит распознавание: {e!r}")
+            return "unknown"
         waited = max(0.0, began - sent)
-        hit = called(words)
+        kind = wake_kind(words)
         self.stats["checked"] += 1
-        self.stats["heard"] += hit
+        self.stats["heard"] += kind in ("bazarchik", "bot")
+        self.stats["maybe"] = self.stats.get("maybe", 0) + (kind == "maybe")
         self.stats["work"] += worked
         if label:
             got = ", ".join(f"{w} {s:.1f}с" for w, s in words) or "тишина"
+            verdict = {"bazarchik": "к боту", "bot": "«бот» → к боту", "maybe": "возможно, проверит Parakeet",
+                       "": "не к боту"}[kind]
             # всего = очередь к свободному процессу детектора + распознавание + пересылка звука между процессами
-            print(f"[wake] {label}: {got} → {'к боту' if hit else 'не к боту'} "
+            print(f"[wake] {label}: {got} → {verdict} "
                   f"({(time.monotonic() - started) * 1000:.0f} мс: очередь {waited * 1000:.0f}, "
                   f"распознавание {worked * 1000:.0f})")
-        return hit
+        return kind
 
     def report(self) -> str:
         s = self.stats
         avg = f", в среднем {s['work'] / s['checked'] * 1000:.0f} мс на фразу" if s["checked"] else ""
-        return f"; детектор {self.state}: проверено {s['checked']}, с обращением {s['heard']}{avg}"
+        return (f"; детектор {self.state}: проверено {s['checked']}, с обращением {s['heard']}, "
+                f"возможно {s.get('maybe', 0)}{avg}")
 
 
 detector = WakeWord()
