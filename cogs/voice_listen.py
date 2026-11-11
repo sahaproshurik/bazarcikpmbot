@@ -31,10 +31,11 @@ from discord.opus import Decoder as OpusDecoder
 from discord.sinks import Sink
 import ai
 import diag
+import local_stt
 import wake_word
 from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
-from names import all_aliases, norm_name, spoken_name
+from names import aliases_of, all_aliases, fix_names, hard_to_say, norm_name, said, spoken_name
 
 try:
     import davey
@@ -247,39 +248,98 @@ def whisper_hint(guild, members=()) -> str:
     return hint
 
 
+# Просьбы, где важно имя человека: кик, бан, мут, перевод денег, прозвища. Если Parakeet распознал такую просьбу,
+# а ни одного известного имени во фразе нет (не расслышал: «замуть Алкоша» → «замутил коше»), фраза ещё раз
+# распознаётся Whisper с подсказкой имён. Лишнее срабатывание стоит один запрос в Groq, пропуск — неверного человека.
+PERSON_RE = re.compile(
+    r"\b(?:кик\w*|выг[но]\w*|вижен\w*|забан\w*|разбан\w*|бан(?:ь|ни|ить|ю)?|замут\w*|размут\w*|мут(?:ь|ни)?|"
+    r"тайм-?аут\w*|перевед\w*|переки\w*|переказ\w*|отправ\w*|подар\w*|дай|дать|запомн\w*|запам\w*|забуд\w*|"
+    r"прозвищ\w*|прізвиськ\w*|зов\w*|назов\w*|клич\w*|"
+    r"vyho\w*|zaban\w*|odban\w*|stlm\w*|pošli|preveď|preved\w*|zapamät\w*|zabud\w*|prezývk\w*|"
+    r"kick|ban|unban|mute|unmute|timeout|send|give|transfer|remember|forget|nickname)\b", re.IGNORECASE)
+
+
+def known_names(guild, members=()) -> list:
+    """Имена, которые должны узнаваться в речи: обращение, прозвища и ники людей в войсе, потом прозвища сервера.
+    Для names.fix_names — Parakeet подсказку с именами не принимает, имена правятся после распознавания.
+    Ник, который голосом не произнести («чвк. allCa$h»), не берём — его заменит прозвище."""
+    gid = getattr(guild, "id", None)
+    found = ["Базарчик", "Bazarčik"]
+    for m in members:
+        if not getattr(m, "bot", False):
+            found += aliases_of(gid, m.id)
+            if not hard_to_say(m):
+                found.append(m.display_name)
+    for aliases in all_aliases(gid).values():
+        found += aliases
+    return list(dict.fromkeys(n for n in found if n))
+
+
 async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiting: bool = False, info: dict = None,
-                    hint: str = WAKE_HINT):
+                    hint: str = WAKE_HINT, names=None):
     """Распознаёт фразу на языке сервера и достаёт вопрос к боту: None — фраза не к боту, "" — позвали без вопроса.
     waiting — человек только что сказал «Базарчик?», и следующая фраза — вопрос даже без обращения.
-    info — сюда для логов кладутся язык, уверенность Whisper и число запросов (без текста фразы).
-    hint — подсказка с именами (whisper_hint); если Groq её не примет, повторяем с одним «Базарчик»."""
+    info — сюда для логов кладутся движок, язык, уверенность Whisper и число запросов в Groq (без текста фразы).
+    names — имена для поправки (known_names): тогда фраза из войса (WAV) сначала идёт в Parakeet на сервере бота;
+    не готов, ошибся или ничего не услышал — в Groq Whisper, как раньше.
+    hint — подсказка Whisper с именами (whisper_hint); если Groq её не примет, повторяем с одним «Базарчик»."""
     info = {} if info is None else info
-    info["requests"] = 1
-    try:
-        heard = await ai.transcribe(audio, filename, hint=hint, language=lang, detailed=True)
-        info["head"] = " ".join((heard.text or "").split()[:2])[:40]   # для лога, если обращения не нашлось
-    except ai.AIError as e:
-        if hint == WAKE_HINT:
-            raise
-        print(f"[listen] Подсказка с именами не принята ({e}) — распознаю без неё")
-        info["requests"] += 1
-        heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+    info["requests"], heard = 0, None
+    if names is not None and local_stt.engine.ready and filename.endswith(".wav"):
+        try:
+            text, worked = await local_stt.engine.transcribe(audio)
+        except local_stt.LocalSTTError as e:
+            print(f"[listen] Parakeet не справился ({e}) — распознаю через Groq Whisper")
+        else:
+            text, fixed = fix_names(text, names)
+            if not text:
+                info["empty"] = True      # Parakeet ничего не услышал — пусть проверит Whisper
+            elif names and PERSON_RE.search(text) and not said(split_wake(text) or text, names):   # без «Базарчик»
+                info["person"] = True     # просьба про человека, а имени Parakeet не расслышал — Whisper с подсказкой
+                # обращение Parakeet услышал: если Whisper «Базарчик» потеряет (бывает, когда оно же в подсказке),
+                # к боту фраза всё равно — берём текст Whisper целиком
+                info["wake"] = split_wake(text) is not None
+            else:
+                heard = ai.Transcript(text, lang, None)
+                info.update(engine="Parakeet", fixed=fixed)
+    if heard is None:
+        info["engine"], info["requests"] = "Whisper", 1
+        try:
+            try:
+                heard = await ai.transcribe(audio, filename, hint=hint, language=lang, detailed=True)
+            except ai.AIError as e:
+                if hint == WAKE_HINT:
+                    raise
+                print(f"[listen] Подсказка с именами не принята ({e}) — распознаю без неё")
+                info["requests"] += 1
+                heard = await ai.transcribe(audio, filename, hint=WAKE_HINT, language=lang, detailed=True)
+        except ai.AIError as e:
+            if not info.get("person"):
+                raise
+            print(f"[listen] Whisper не ответил ({e}) — беру текст Parakeet как есть")
+            heard, info["engine"] = ai.Transcript(text, lang, None), "Parakeet"   # text — от Parakeet, уже с поправкой
+    info["head"] = " ".join((heard.text or "").split()[:2])[:40]   # для лога, если обращения не нашлось
     info.update(lang=lang, score=heard.score)
     text = drop_junk(heard.text)
     if text != " ".join((heard.text or "").split()):
         info["junk"] = True               # в лог — только факт, без текста
     question = split_wake(text)
-    if question is None and waiting and text:
-        question = text
+    if question is None and (waiting or info.get("wake")) and text:
+        question = text                   # ждали ответ или обращение уже услышал Parakeet
     return question
 
 
 def whisper_note(info: dict, seconds: float) -> str:
-    """«Whisper uk (-0.33), 2 запроса, 0.9 с» — для логов."""
+    """«Whisper uk (-0.33), запросов в Groq 2, 0.9 с» или «Parakeet ru, имён поправлено 1, 0.7 с» — для логов."""
     score = info.get("score")
     lang = f"{info.get('lang')} ({score:.2f})" if score is not None else str(info.get("lang"))
     junk = ", убрал выдуманное на шуме" if info.get("junk") else ""
-    return f"Whisper {lang}, запросов {info.get('requests', 0)}, {seconds:.1f} с{junk}"
+    if info.get("engine") == "Parakeet":
+        fixed = f", имён поправлено {info['fixed']}" if info.get("fixed") else ""
+        return f"Parakeet {lang}{fixed}, {seconds:.1f} с{junk}"
+    empty = ("Parakeet ничего не услышал → " if info.get("empty") else
+             "Parakeet: просьба про человека без известного имени → " if info.get("person") else "")
+    return f"{empty}Whisper {lang}, запросов в Groq {info.get('requests', 0)}, {seconds:.1f} с{junk}"
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -581,6 +641,7 @@ class ListenSession:
         self.loop_task = asyncio.create_task(self._watch())
         self._spawn(self._work())
         wake_word.detector.acquire()      # модель «Базарчик» грузится в фоне, пока она не готова — всё решает Whisper
+        local_stt.engine.acquire()        # Parakeet — тоже в фоне; пока не готов, фразы распознаёт Groq Whisper
         humans = sum(not m.bot for m in getattr(self.vc.channel, "members", []))
         print(f"[listen] Старт: {getattr(self.guild, 'name', self.guild.id)} / "
               f"{getattr(self.vc.channel, 'name', self.vc.channel)}, людей {humans}; "
@@ -673,7 +734,8 @@ class ListenSession:
                     return await self.stop("полчаса никто не обращался")
                 if now - self.reported_at >= 60:      # статистика приёма в логи — для диагностики
                     self.reported_at = now
-                    print(f"[listen] {self.vc.channel}: {self.sink.report()}{wake_word.detector.report()}")
+                    print(f"[listen] {self.vc.channel}: {self.sink.report()}{wake_word.detector.report()}"
+                          f"{local_stt.engine.report()}")
                     print(f"[listen] За минуту: {self.counts_note(self.minute)}; {diag.report(self.cpu)}")
                     print(f"[queue] {self.queue_note()}")
                     self.minute = {}
@@ -782,7 +844,7 @@ class ListenSession:
         audio, lang, info = await asyncio.to_thread(to_wav, pcm), listen_lang(self.guild.id), {}
         del pcm
         try:
-            question = await recognize(audio, "speech.wav", lang, False, info)
+            question = await recognize(audio, "speech.wav", lang, False, info, names=())   # «стоп» — без имён
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return
@@ -825,8 +887,9 @@ class ListenSession:
         del pcm
         info, lang = {}, listen_lang(self.guild.id)
         try:
-            question = await recognize(audio, "speech.wav", lang, waiting, info,
-                                       whisper_hint(self.guild, getattr(self.vc.channel, "members", [])))
+            members = getattr(self.vc.channel, "members", [])
+            question = await recognize(audio, "speech.wav", lang, waiting, info, whisper_hint(self.guild, members),
+                                       names=known_names(self.guild, members))
         except ai.AIError as e:
             print(f"[listen] {tag}: распознавание не удалось: {e}")
             return None
@@ -836,7 +899,7 @@ class ListenSession:
         note = whisper_note(info, time.monotonic() - started)
         if question is None:
             self.count("dropped")
-            heard = (f" (начало: «{info.get('head', '')}»)" if getattr(wake_word.detector, "model", None) is not None
+            heard = (f" (начало: «{info.get('head', '')}»)" if wake_word.detector.ready
                      and not waiting else "")   # детектор услышал «Базарчик», а Whisper — нет: что он записал
             print(f"[listen] {tag}: {note} — обращения нет, фраза выброшена{heard}")
             return None                   # обычный разговор — не к боту, расшифровку выбрасываем
@@ -888,6 +951,7 @@ class ListenSession:
         print(f"[listen] Стоп ({reason or 'без причины'}): {(time.monotonic() - self.started) / 60:.1f} мин, "
               f"{self.counts_note(self.total)}; {self.sink.report()}")
         wake_word.detector.release()
+        local_stt.engine.release()
         if self.queue:
             print(f"[queue] Прослушивание выключено — в очереди осталось {len(self.queue)}: {self.queue_note()}")
             self.queue.clear()

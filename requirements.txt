@@ -5,3 +5,4 @@ gtts
 edge-tts
 groq>=1.0
 vosk>=0.3.45
+onnx-asr[cpu,hub]>=0.12

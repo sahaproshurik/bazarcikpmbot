@@ -251,6 +251,58 @@ def spoken_name(member) -> str:
     return name or member.display_name
 
 
+WORD_RE = re.compile(r"[^\W\d_][\w'’]*")
+
+
+def fix_names(text: str, names) -> tuple:
+    """Имена, записанные распознаванием «на слух», — заменить на известные: прозвища, ники людей в войсе, «Базарчик».
+    Parakeet, в отличие от Whisper, подсказку с именами не принимает и пишет имя созвучным словом:
+    «Алкошу» → «Алкаш», «Перебережчик» → «PereBerezcik». (новый текст, сколько замен).
+
+    Меняем осторожно, чтобы не испортить обычные слова: имя от 5 букв (межъязыковой ключ loose_name), похожесть
+    от 0.8, совпадает первая буква, длина отличается не больше чем на 3. Слово, которое уже совпадает с именем
+    точно или с падежом («Алкаша»), не трогаем: его найдёт names.said/find_member. Пары слов сравниваются
+    с именами из двух слов («Пере Бережчик»)."""
+    targets = {}
+    for raw in names:                                # «Bc. Bc. PereBerezcik» — и целиком, и по словам
+        raw = (raw or "").strip()
+        for part in [raw] if len(raw.split()) <= 2 else WORD_RE.findall(raw):
+            key = loose_name(part)
+            if len(key) >= 5:
+                targets.setdefault(key, part)
+    if not text or not targets:
+        return text, 0
+    words = list(WORD_RE.finditer(text))
+    spans, used = [], set()
+    for size in (2, 1):
+        for i in range(len(words) - size + 1):
+            idx = set(range(i, i + size))
+            if idx & used or (size > 1 and any(len(w.group()) < 3 for w in words[i:i + size])):
+                continue                          # «Петруху на» — не имя из двух слов
+            gram = "".join(w.group() for w in words[i:i + size])
+            key = loose_name(gram)
+            if len(key) < 5:
+                continue
+            if any(key == t or stem(key) == stem(t) or root(key) == root(t) for t in targets):
+                used |= idx                       # имя уже записано правильно (или в падеже)
+                continue
+            best, score = None, 0.0
+            for t, raw in targets.items():
+                if t[0] != key[0] or abs(len(t) - len(key)) > 3:
+                    continue
+                ratio = difflib.SequenceMatcher(None, key, t).ratio()
+                if len(stem(key)) == len(stem(t)):    # «Алкоша» и «Алкаш»: окончание и одна гласная, основа той же длины
+                    ratio = max(ratio, difflib.SequenceMatcher(None, stem(key), stem(t)).ratio())
+                if ratio > score:
+                    best, score = raw, ratio
+            if best is not None and score >= 0.8:
+                spans.append((words[i].start(), words[i + size - 1].end(), best))
+                used |= idx
+    for start, end, raw in sorted(spans, reverse=True):
+        text = text[:start] + raw + text[end:]
+    return text, len(spans)
+
+
 def hard_to_say(member) -> bool:
     """Ник, который голосом не назвать и Whisper не запишет: значки, смесь алфавитов, нет ни одной буквы."""
     name = member.display_name

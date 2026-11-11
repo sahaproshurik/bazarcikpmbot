@@ -16,6 +16,10 @@ wake_word.py — локальный детектор обращения «Баз
 слова-соперники (WAKE_MODE=rivals, по умолчанию); WAKE_MODE=classic — прежний список из трёх слов.
 В памяти модель держится, только пока бот слушает войс.
 
+Фразы слушают отдельные процессы (WAKE_WORKERS, на 4 ядрах — 2) на ядрах WAKE_CORES (по умолчанию все,
+кроме нулевого — оно остаётся боту): несколько человек проверяются одновременно, а бот не тормозит,
+пока детектор считает. WAKE_WORKERS=0 — по-старому, в потоке бота.
+
 Если vosk не установлен, модель не скачалась или детектор выключен (LOCAL_WAKE=0), бот работает
 как раньше — каждую фразу распознаёт Whisper.
 """
@@ -23,13 +27,14 @@ import asyncio
 import hashlib
 import json
 import os
+import multiprocessing
 import shutil
 import struct
-import threading
 import time
 import urllib.request
 import zipfile
 from array import array
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
 import diag
 
 ENABLED      = os.getenv("LOCAL_WAKE", "1").strip().lower() not in ("0", "off", "false", "no")
@@ -183,22 +188,89 @@ def _build(model_dir: str, url: str, sha256: str) -> str:
             os.remove(part)
 
 
+def _cores_setting():
+    """Ядра для процессов детектора. WAKE_CORES=«1-3» или «2,3»; по умолчанию на 3+ ядрах — все, кроме нулевого:
+    его оставляем боту (Discord, приём голоса, ffmpeg), чтобы распознавание не отнимало у него процессор."""
+    raw, total = os.getenv("WAKE_CORES", "").strip(), os.cpu_count() or 1
+    if raw.lower() in ("all", "0-"):
+        return None
+    if raw:
+        cores = set()
+        for part in raw.split(","):
+            a, _, b = part.strip().partition("-")
+            cores.update(range(int(a), int(b or a) + 1))
+        return cores & set(range(total)) or None
+    return set(range(1, total)) if total >= 3 else None
+
+
+def _workers_setting(cores) -> int:
+    """Сколько фраз детектор слушает одновременно. WAKE_WORKERS=0 — по-старому, в потоке бота, без процессов.
+    По умолчанию — по процессу на два свободных ядра (на 4 ядрах — 2), на слабом хостинге — 1."""
+    raw = os.getenv("WAKE_WORKERS", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    free = len(cores) if cores else (os.cpu_count() or 1)
+    return max(1, min(2, free - 1)) if free >= 3 else 1
+
+
+CORES   = _cores_setting()
+WORKERS = _workers_setting(CORES)
+
+# ── Рабочие процессы детектора ────────────────────────────────
+# Модель Vosk грузится в каждый процесс один раз (~80 МиБ), фразы распознаются параллельно и не держат GIL бота:
+# прежде все фразы шли по одной через замок, и в войсе на пятерых строка [wake] показывала до 1.1 с ожидания.
+_worker: dict = {}
+
+
+def _worker_init(path: str, cores):
+    if cores and hasattr(os, "sched_setaffinity"):
+        try:
+            os.sched_setaffinity(0, cores)        # Linux: процесс детектора не залезает на ядро бота
+        except OSError:
+            pass
+    import vosk
+    vosk.SetLogLevel(-1)
+    started = time.monotonic()
+    _worker["vosk"], _worker["model"] = vosk, vosk.Model(path)
+    _worker["load"] = time.monotonic() - started
+
+
+def _worker_ping(delay: float) -> tuple:
+    """Прогрев: каждый процесс загрузил модель. (pid, за сколько загрузил, на каких ядрах)."""
+    time.sleep(delay)
+    cores = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+    return os.getpid(), _worker.get("load", 0.0), cores
+
+
+def _worker_spot(pcm: bytes, grammar_json: str) -> tuple:
+    """(слова, когда начали — time.time(), сколько распознавали). Ресэмплинг — тоже здесь, не в процессе бота.
+    Распознаватель создаётся заново: это ~1 мс против ~45 мс на саму фразу (замер), а чужие фразы его не «настраивают»."""
+    began = time.time()
+    rec = _worker["vosk"].KaldiRecognizer(_worker["model"], 16000, grammar_json)
+    rec.SetWords(True)
+    rec.AcceptWaveform(to_16k_mono(pcm))
+    result = json.loads(rec.FinalResult())
+    return [(w["word"], w["start"]) for w in result.get("result", [])], began, time.time() - began
+
+
 class WakeWord:
-    """Детектор на все сессии прослушивания: модель грузится с первой сессией и выгружается с последней."""
+    """Детектор на все сессии прослушивания: процессы с моделью запускаются с первой сессией и гасятся с последней."""
 
     def __init__(self):
-        self.model = None
-        self.vosk = None
+        self.pool = None                         # ProcessPoolExecutor (или поток при WAKE_WORKERS=0)
         self.users = 0
         self.state = "выключен" if not ENABLED else "не загружен"
         self.stats = {"checked": 0, "heard": 0, "work": 0.0}
         self._task = None
-        self._lock = threading.Lock()            # распознаём по одной фразе — CPU на хостинге мало
+
+    @property
+    def ready(self) -> bool:
+        return self.pool is not None
 
     def acquire(self):
-        """Началась сессия прослушивания: загружаем модель в фоне (в первый раз — со скачиванием)."""
+        """Началась сессия прослушивания: запускаем детектор в фоне (в первый раз — со скачиванием модели)."""
         self.users += 1
-        if ENABLED and self.model is None and (self._task is None or self._task.done()):
+        if ENABLED and self.pool is None and (self._task is None or self._task.done()):
             self._task = asyncio.get_running_loop().create_task(self._load())
 
     def loading(self) -> bool:
@@ -206,79 +278,87 @@ class WakeWord:
         return self._task is not None and not self._task.done()
 
     def release(self):
-        """Сессия закончилась: без слушающих сессий модель не держим в памяти."""
+        """Сессия закончилась: без слушающих сессий процессы с моделью не держим."""
         self.users = max(0, self.users - 1)
-        if not self.users and self.model is not None:
-            self.model = None
-            self.state = "не загружен"
-            print("[wake] Модель выгружена из памяти")
+        if not self.users and self.pool is not None:
+            self._drop()
+            print("[wake] Детектор выгружен из памяти")
+
+    def _drop(self, why: str = None):
+        pool, self.pool = self.pool, None
+        self.state = f"не работает ({why})" if why else "не загружен"
+        if why:
+            print(f"[wake] Детектор «Базарчик» отключён, все фразы распознаёт Whisper: {why}")
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     async def _load(self):
         self.state = "загружается"
+        started = time.monotonic()
         try:
-            vosk, model = await asyncio.to_thread(self._open)
+            fresh = not os.path.exists(os.path.join(MODEL_DIR, "graph", "words.txt"))
+            path = await asyncio.to_thread(prepare_model)
+            if fresh:
+                print(f"[wake] Модель скачана и подготовлена за {time.monotonic() - started:.1f} с → {path}")
+            print("[wake] Загружаю модель. Строка Vosk «Fst::Read: Can't open file …/Gr.fst» — норма: "
+                  "этот файл удалён специально, чтобы модель занимала меньше памяти")
+            pool, how = self._start(path)
+            loop = asyncio.get_running_loop()
+            # по заданию на каждый процесс сразу: все загрузят модель до первой фразы, а не на ней
+            pings = await asyncio.gather(*(loop.run_in_executor(pool, _worker_ping, 0.3)
+                                           for _ in range(max(1, WORKERS))))
         except Exception as e:
             self.state = f"не работает ({type(e).__name__}: {e})"
             print(f"[wake] Детектор «Базарчик» не запустился, все фразы распознаёт Whisper: {self.state}")
             return
-        if not self.users:                       # пока грузилась, все сессии закончились
+        if not self.users:                       # пока грузился, все сессии закончились
+            pool.shutdown(wait=False, cancel_futures=True)
             self.state = "не загружен"
             return
-        self.vosk, self.model, self.state = vosk, model, "работает"
-        print("[wake] Детектор «Базарчик» готов: в Whisper уходят только фразы с обращением")
+        self.pool, self.state = pool, "работает"
+        loads = ", ".join(f"{t:.1f} с" for _, t, _ in pings)
+        cores = pings[0][2]
+        print(f"[wake] Детектор «Базарчик» готов за {time.monotonic() - started:.1f} с: {how}, модель загружена за "
+              f"{loads}" + (f", ядра {cores[0]}–{cores[-1]}" if cores else "")
+              + f", режим {MODE}; {diag.report()}")
 
     @staticmethod
-    def _open():
-        import vosk
-        vosk.SetLogLevel(-1)
-        started = time.monotonic()
-        fresh = not os.path.exists(os.path.join(MODEL_DIR, "graph", "words.txt"))
-        path = prepare_model()
-        if fresh:
-            print(f"[wake] Модель скачана и подготовлена за {time.monotonic() - started:.1f} с → {path}")
-        print("[wake] Загружаю модель. Строка Vosk «Fst::Read: Can't open file …/Gr.fst» — норма: "
-              "этот файл удалён специально, чтобы модель занимала меньше памяти")
-        started = time.monotonic()
-        model = vosk.Model(path)
-        print(f"[wake] Модель загружена за {time.monotonic() - started:.1f} с, режим {MODE}; {diag.report()}")
-        return vosk, model
-
-    def _spot(self, model, audio: bytes) -> tuple:
-        """(слова, сколько ждали своей очереди, сколько распознавали) — время в секундах.
-        Распознаватель создаётся заново: это ~1 мс против ~45 мс на саму фразу (замер), а чужие фразы его не «настраивают»."""
-        queued = time.monotonic()
-        with self._lock:
-            started = time.monotonic()
-            rec = self.vosk.KaldiRecognizer(model, 16000, grammar())
-            rec.SetWords(True)
-            rec.AcceptWaveform(audio)
-            result = json.loads(rec.FinalResult())
-        return ([(w["word"], w["start"]) for w in result.get("result", [])], started - queued,
-                time.monotonic() - started)
+    def _start(path: str):
+        """Процессы детектора (spawn: без копии памяти и потоков бота) или, при WAKE_WORKERS=0, поток бота."""
+        if WORKERS <= 0:
+            pool = ThreadPoolExecutor(1, thread_name_prefix="wake", initializer=_worker_init, initargs=(path, None))
+            return pool, "в потоке бота (WAKE_WORKERS=0)"
+        pool = ProcessPoolExecutor(WORKERS, mp_context=multiprocessing.get_context("spawn"),
+                                   initializer=_worker_init, initargs=(path, CORES))
+        return pool, f"процессов {WORKERS}"
 
     async def heard(self, pcm: bytes, label: str = "") -> bool:
         """Есть ли в начале фразы «Базарчик». Детектор не готов — True: пусть решает Whisper, как раньше.
         label («#12 Nikita (2.4 с)») — для строки в логе. В лог попадает только то, что услышал детектор:
         его словарь — «базар», «чик» и [unk] (всё остальное), так что содержание фразы туда не утекает."""
-        model = self.model
-        if model is None:
+        pool = self.pool
+        if pool is None:
             if label:
                 print(f"[wake] {label}: детектор {self.state} → фраза идёт в Whisper")
             return True
-        audio = to_16k_mono(pcm[: int(WINDOW_SEC * 48000) * 4])
-        started = time.monotonic()
+        started, sent = time.monotonic(), time.time()
         try:
-            words, waited, worked = await asyncio.to_thread(self._spot, model, audio)
+            words, began, worked = await asyncio.get_running_loop().run_in_executor(
+                pool, _worker_spot, pcm[: int(WINDOW_SEC * 48000) * 4], grammar())
+        except BrokenExecutor as e:
+            self._drop(f"процесс детектора упал ({type(e).__name__})")
+            return True
         except Exception as e:
             print(f"[wake] {label}: ошибка детектора, фраза уходит в Whisper: {e!r}")
             return True
+        waited = max(0.0, began - sent)
         hit = called(words)
         self.stats["checked"] += 1
         self.stats["heard"] += hit
         self.stats["work"] += worked
         if label:
             got = ", ".join(f"{w} {s:.1f}с" for w, s in words) or "тишина"
-            # всего = ожидание потока + очередь детектора (фразы по одной) + распознавание
+            # всего = очередь к свободному процессу детектора + распознавание + пересылка звука между процессами
             print(f"[wake] {label}: {got} → {'к боту' if hit else 'не к боту'} "
                   f"({(time.monotonic() - started) * 1000:.0f} мс: очередь {waited * 1000:.0f}, "
                   f"распознавание {worked * 1000:.0f})")
