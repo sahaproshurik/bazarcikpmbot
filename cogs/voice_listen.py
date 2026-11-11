@@ -33,6 +33,7 @@ from discord.sinks import Sink
 import ai
 import diag
 import local_stt
+import local_tts
 import wake_word
 from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
@@ -212,9 +213,10 @@ WAKE_LEADS = {"эй", "ей", "hey", "слушай", "ну", "а"}
 
 
 def fix_wake(text: str) -> tuple:
-    """Parakeet пишет «Базарчик» как слышит — «Bazaczek» (решил, что польский), «Базарчек», «База чек». Первое слово
-    (или два), похожее на «Базарчик» (межъязыковой ключ от 0.7, начинается на «ба»), заменяем — тогда split_wake его
-    узнает. Зовём только после детектора, который «Базарчик» уже услышал. (текст, заменили ли)."""
+    """Распознавание пишет «Базарчик» как слышит — «Bazaczek» (Parakeet решил, что польский), «Базарчек», «База чек»,
+    «Азарчик» (начало «Б» срезал микрофон), «BsBazarčik» (Whisper). Первое слово (или два), похожее на «Базарчик»
+    (межъязыковой ключ от 0.7, начинается на «б» или «а»), заменяем — тогда split_wake его узнает. Зовём только для
+    фраз из войса, где детектор «Базарчик» уже услышал. (текст, заменили ли)."""
     words = list(WORD_RE.finditer(text or ""))
     start = 1 if words and words[0].group().lower() in WAKE_LEADS else 0
     for size in (1, 2):
@@ -222,7 +224,7 @@ def fix_wake(text: str) -> tuple:
         if len(part) < size:
             break
         key = loose_name("".join(w.group() for w in part))
-        if key.startswith("ba") and difflib.SequenceMatcher(None, key, WAKE_KEY).ratio() >= 0.7:
+        if key[:1] in ("b", "a") and difflib.SequenceMatcher(None, key, WAKE_KEY).ratio() >= 0.7:
             return text[:part[0].start()] + "Базарчик" + text[part[-1].end():], True
     return text, False
 
@@ -366,6 +368,10 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
     if text != " ".join((heard.text or "").split()):
         info["junk"] = True               # в лог — только факт, без текста
     question = split_wake(text)
+    if question is None and names is not None and not waiting and info.get("engine") == "Whisper":
+        text, fixed = fix_wake(text)      # «Азарчик», «BsBazarčik» от Whisper — детектор обращение уже услышал
+        question = split_wake(text)
+        info["wake_fixed"] = info.get("wake_fixed") or fixed
     if question is None and (waiting or info.get("wake")) and text:
         question = text                   # ждали ответ или обращение уже услышал Parakeet
     return question
@@ -384,7 +390,8 @@ def whisper_note(info: dict, seconds: float) -> str:
              "Parakeet не расслышал «Базарчик» → " if info.get("nowake") else
              "Parakeet записал другим алфавитом → " if info.get("script") else
              "Parakeet: просьба про человека без известного имени → " if info.get("person") else "")
-    return f"{empty}Whisper {lang}, запросов в Groq {info.get('requests', 0)}, {seconds:.1f} с{junk}"
+    wake = ", «Базарчик» узнан по похожему слову" if info.get("wake_fixed") else ""
+    return f"{empty}Whisper {lang}, запросов в Groq {info.get('requests', 0)}{wake}, {seconds:.1f} с{junk}"
 
 
 def frame_loud(pcm: bytes) -> bool:
@@ -687,6 +694,7 @@ class ListenSession:
         self._spawn(self._work())
         wake_word.detector.acquire()      # модель «Базарчик» грузится в фоне, пока она не готова — всё решает Whisper
         local_stt.engine.acquire()        # Parakeet — тоже в фоне; пока не готов, фразы распознаёт Groq Whisper
+        self._spawn(local_tts.warm([listen_lang(self.guild.id)]))   # голоса Piper — подстраховка медленного edge-tts
         humans = sum(not m.bot for m in getattr(self.vc.channel, "members", []))
         print(f"[listen] Старт: {getattr(self.guild, 'name', self.guild.id)} / "
               f"{getattr(self.vc.channel, 'name', self.vc.channel)}, людей {humans}; "

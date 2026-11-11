@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 import edge_tts
 import ai
+import local_tts
 import reply_modes
 from config import AI_SYSTEM_PROMPT, TTS_SETTINGS
 from views import OwnedView, GREEN, GREY
@@ -144,22 +145,65 @@ def hush(vc) -> bool:
     return playing
 
 
+def _drop_file(task: asyncio.Task):
+    """Синтез, который не понадобился, — удалить его файл, когда допишется."""
+    if not task.cancelled() and task.exception() is None:
+        try: os.unlink(task.result())
+        except OSError: pass
+
+
+async def _edge(text: str, voice: str) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        path = f.name
+    try:
+        await edge_tts.Communicate(text[:1500], voice).save(path)
+    except BaseException:
+        try: os.unlink(path)
+        except OSError: pass
+        raise
+    return path
+
+
+async def _synthesize(text: str, voice: str) -> tuple:
+    """(путь к файлу, чем озвучено). edge-tts и Piper (local_tts) запускаются сразу оба: успел edge-tts за
+    TTS_EDGE_WAIT секунд — звучит он, нет или ошибся — Piper, который к этому времени обычно уже готов."""
+    lang, male = detect_lang(text), voice in MALE_VOICES
+    piper_label = f"Piper {local_tts.voice_name(lang, male)}"
+    if local_tts.ENGINE == "piper":
+        return await local_tts.synth(text, lang, male), piper_label
+    edge = asyncio.create_task(_edge(text, voice))
+    if not local_tts.available():
+        return await edge, voice
+    piper = asyncio.create_task(local_tts.synth(text, lang, male))
+    done, _ = await asyncio.wait({edge}, timeout=local_tts.EDGE_WAIT)
+    if edge in done and edge.exception() is None:
+        piper.add_done_callback(_drop_file)
+        return edge.result(), voice
+    why = (f"ошибка {edge.exception()!r}" if edge in done else f"не успел за {local_tts.EDGE_WAIT:.1f} с")
+    try:
+        path = await piper
+    except Exception as e:
+        print(f"[tts] {voice}: {why}, и Piper не помог ({e!r})")
+        if edge in done:
+            raise edge.exception()
+        return await edge, voice                      # ждём edge-tts дальше — лучше поздно, чем молча
+    if edge not in done:
+        edge.cancel()                                 # отменённый _edge сам удаляет свой файл
+    print(f"[tts] {voice}: {why} — озвучиваю {piper_label}")
+    return path, piper_label
+
+
 async def say(vc: discord.VoiceClient, text: str):
-    """Озвучивает текст в уже подключённом войсе (edge-tts → FFmpeg); ждёт, пока доиграет прошлая фраза.
+    """Озвучивает текст в уже подключённом войсе (edge-tts или Piper → FFmpeg); ждёт, пока доиграет прошлая фраза.
     В логах — голос, длина, время синтеза, ожидание очереди и сколько фраза звучала.
     Фраза, поставленная в очередь до «Базарчик, стоп» (hush), не звучит."""
     gid = getattr(getattr(vc, "guild", None), "id", None)
     epoch = _hushed.get(gid, 0)
-    voice = voice_for(text)
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        tts_path = f.name
     started = time.monotonic()
     try:
-        await edge_tts.Communicate(text[:1500], voice).save(tts_path)
+        tts_path, voice = await _synthesize(text, voice_for(text))
     except Exception as e:
-        print(f"[tts] {voice}: синтез не удался за {time.monotonic() - started:.1f} с: {e!r}")
-        try: os.unlink(tts_path)
-        except OSError: pass
+        print(f"[tts] {voice_for(text)}: синтез не удался за {time.monotonic() - started:.1f} с: {e!r}")
         raise
     synth = time.monotonic() - started
     while vc.is_playing() and _hushed.get(gid, 0) == epoch:

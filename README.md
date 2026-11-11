@@ -29,6 +29,8 @@ python main.py
 | `WAKE_CORES` | нет | На каких ядрах работает детектор (Linux): `1-3`, `2,3`, `all`. По умолчанию на 3+ ядрах — все, кроме нулевого: его оставляем боту |
 | `STT_ENGINE` | нет | Кто превращает речь из войса в текст. `local` (по умолчанию на 3+ ядрах) — Parakeet v3 на сервере бота, Groq Whisper запасной; `groq` — только Groq Whisper, как раньше |
 | `LOCAL_STT_THREADS` | нет | Сколько потоков у Parakeet; по умолчанию — столько, сколько ядер в `WAKE_CORES` (на 4 ядрах — 3) |
+| `TTS_ENGINE` | нет | Озвучка: `auto` (по умолчанию) — edge-tts, а если не успел за `TTS_EDGE_WAIT` секунд или ошибся — Piper на сервере бота; `edge` — только edge-tts; `piper` — только Piper |
+| `TTS_EDGE_WAIT` | нет | Сколько секунд ждать edge-tts, прежде чем озвучить Piper; по умолчанию 2.5 |
 | `SPT_STATUS_GIST_ID` | нет | Gist со статусом SPT-сервера (старая `SPT_STATUS_GIST_URL` тоже понимается) |
 | `SPT_STATUS_GIST_FILENAME`, `SPT_STATUS_GITHUB_TOKEN` | нет | Имя файла в gist и токен для частых проверок |
 

@@ -16,6 +16,8 @@ vosk-wake-ru.tmp/
 vosk-wake-ru.zip.part
 # Parakeet v3 — распознавание речи на сервере, скачивается само при первом !listen (~2.5 ГБ)
 parakeet-v3/
+# Голоса Piper — озвучка на сервере, скачиваются сами при первом !listen (~60 МБ каждый)
+piper-voices/
 
 # Рабочие данные бота — создаются на хостинге, в git им не место
 player_loans.json
