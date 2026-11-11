@@ -1139,3 +1139,14 @@ HF: оттуда onnxruntime не читает веса («External data path es
 
 **Что изменено:** `local_stt.py` (новый), `names.py` (`fix_names`), `cogs/voice_listen.py` (`recognize`,
 `known_names`, `PERSON_RE`, `whisper_note`), `requirements.txt` (`onnx-asr[cpu,hub]`), `.gitignore`, `README.md`.
+
+## 38. Бот на новом сервере не слышал войс — davey 0.2.0
+
+После переезда на Oracle `!listen` не слышал ни одной фразы: из 2744 и 2241 пакетов звук был в 1 и 4 (на старом
+хостинге 29.10 — 8261 из 10066). Голос в Discord зашифрован сквозным шифрованием DAVE (библиотека `davey`).
+02.11.2026 вышла `davey` 0.2.0 с несовместимыми изменениями: `process_commit`/`process_welcome` больше не включают
+новые ключи — нужно ещё `prepare_transition`/`execute_transition`, а py-cord 2.8.1 их не вызывает, хотя `davey<1`
+разрешает. На новом сервере pip поставил 0.2.0: ключи не включались, вместо звука — тишина (и голос бота, скорее
+всего, тоже не расшифровался бы у остальных). На старом хостинге стояла 0.1.x.
+
+Исправление: `davey>=0.1.4,<0.2` в `requirements.txt`, пока py-cord не поддержит 0.2.

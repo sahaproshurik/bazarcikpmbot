@@ -1,4 +1,7 @@
 py-cord[voice]>=2.8.1,<3
+# DAVE (шифрование голоса Discord): 0.2.0 от 02.11.2026 требует prepare/execute_transition, которых py-cord 2.8.1 не вызывает —
+# ключи не включаются, бот слышит тишину и сам звучит тишиной. Пока py-cord не обновится — 0.1.x
+davey>=0.1.4,<0.2
 python-dotenv
 pytz
 gtts
