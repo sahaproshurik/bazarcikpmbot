@@ -15,6 +15,7 @@ Discord шифрует голос (DAVE), и py-cord пока помечает �
 а голосовые сообщения работают всегда.
 """
 import asyncio
+import difflib
 import io
 import logging
 import re
@@ -35,7 +36,8 @@ import local_stt
 import wake_word
 from cogs.voice_ai import say, answer_embed, hush
 from data import guild_config, save_guild_cfg
-from names import aliases_of, all_aliases, fix_names, hard_to_say, norm_name, said, spoken_name
+from names import (WORD_RE, aliases_of, all_aliases, fix_names, hard_to_say, loose_name, norm_name, said,
+                   spoken_name)
 
 try:
     import davey
@@ -191,6 +193,40 @@ def split_wake(text: str):
     return None if m is None else text[m.end():].strip()
 
 
+CYRILLIC_LANGS = {"ru", "uk"}
+
+
+def script_ok(text: str, lang: str) -> bool:
+    """Алфавит текста подходит языку прослушки: русский и украинский — кириллица, словацкий и английский — латиница.
+    Parakeet сам выбирает язык и иногда «слышит» русскую фразу как польскую («Bazaczek zwań») — тогда остальная
+    фраза тоже мусор, и её лучше распознать Whisper, которому язык задан."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return True
+    cyrillic = sum("Ѐ" <= c <= "ӿ" for c in letters) / len(letters)
+    return cyrillic >= 0.5 if lang in CYRILLIC_LANGS else cyrillic <= 0.5
+
+
+WAKE_KEY   = loose_name("Базарчик")
+WAKE_LEADS = {"эй", "ей", "hey", "слушай", "ну", "а"}
+
+
+def fix_wake(text: str) -> tuple:
+    """Parakeet пишет «Базарчик» как слышит — «Bazaczek» (решил, что польский), «Базарчек», «База чек». Первое слово
+    (или два), похожее на «Базарчик» (межъязыковой ключ от 0.7, начинается на «ба»), заменяем — тогда split_wake его
+    узнает. Зовём только после детектора, который «Базарчик» уже услышал. (текст, заменили ли)."""
+    words = list(WORD_RE.finditer(text or ""))
+    start = 1 if words and words[0].group().lower() in WAKE_LEADS else 0
+    for size in (1, 2):
+        part = words[start:start + size]
+        if len(part) < size:
+            break
+        key = loose_name("".join(w.group() for w in part))
+        if key.startswith("ba") and difflib.SequenceMatcher(None, key, WAKE_KEY).ratio() >= 0.7:
+            return text[:part[0].start()] + "Базарчик" + text[part[-1].end():], True
+    return text, False
+
+
 def listen_lang(guild_id) -> str:
     """Язык, который бот слушает на сервере. Хранится в guild_config: {"guild_id": {"listen_lang": "sk"}}."""
     lang = guild_config.get(str(guild_id), {}).get("listen_lang", DEFAULT_LANG)
@@ -292,8 +328,14 @@ async def recognize(audio: bytes, filename: str, lang: str = DEFAULT_LANG, waiti
             print(f"[listen] Parakeet не справился ({e}) — распознаю через Groq Whisper")
         else:
             text, fixed = fix_names(text, names)
+            if text and split_wake(text) is None:
+                text, info["wake_fixed"] = fix_wake(text)
             if not text:
                 info["empty"] = True      # Parakeet ничего не услышал — пусть проверит Whisper
+            elif not script_ok(text, lang):
+                info["script"] = True     # «Bazaczek zwań» на русском войсе — Parakeet принял речь за другой язык
+            elif split_wake(text) is None and not waiting and wake_word.detector.ready:
+                info["nowake"] = True     # детектор «Базарчик» услышал, а Parakeet — нет: решит Whisper с подсказкой
             elif names and PERSON_RE.search(text) and not said(split_wake(text) or text, names):   # без «Базарчик»
                 info["person"] = True     # просьба про человека, а имени Parakeet не расслышал — Whisper с подсказкой
                 # обращение Parakeet услышал: если Whisper «Базарчик» потеряет (бывает, когда оно же в подсказке),
@@ -336,8 +378,11 @@ def whisper_note(info: dict, seconds: float) -> str:
     junk = ", убрал выдуманное на шуме" if info.get("junk") else ""
     if info.get("engine") == "Parakeet":
         fixed = f", имён поправлено {info['fixed']}" if info.get("fixed") else ""
+        fixed += ", «Базарчик» узнан по похожему слову" if info.get("wake_fixed") else ""
         return f"Parakeet {lang}{fixed}, {seconds:.1f} с{junk}"
     empty = ("Parakeet ничего не услышал → " if info.get("empty") else
+             "Parakeet не расслышал «Базарчик» → " if info.get("nowake") else
+             "Parakeet записал другим алфавитом → " if info.get("script") else
              "Parakeet: просьба про человека без известного имени → " if info.get("person") else "")
     return f"{empty}Whisper {lang}, запросов в Groq {info.get('requests', 0)}, {seconds:.1f} с{junk}"
 
